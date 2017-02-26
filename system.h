@@ -14,9 +14,7 @@ enum CONSOLE_REGION{
 	CONSOLE_REGION_COUNT
 };
 
-#define FILE_IS_OPTIONAL	0x01
-#define NO_WARN_FILE_NOT_FOUND	0x02
-#define FILE_IS_KELF		0x04
+#define FILE_IS_KELF		0x01
 
 enum EXTENDED_ERROR_CODES{
 	EEXTMGSIGNERR	 = 0x1000,
@@ -134,3 +132,4 @@ int HDDCheckSMARTStatus(void);
 int HDDCheckSectorErrorStatus(void);
 int HDDCheckPartErrorStatus(void);
 int HDDCheckHasSpace(unsigned int PartSize);
+

@@ -19,7 +19,7 @@
 #include "main.h"
 #include "pad.h"
 #include "graphics.h"
-#include "FreeTypeSupport.h"
+#include "font.h"
 
 #include "libsecr.h"
 #include "mctools_rpc.h"

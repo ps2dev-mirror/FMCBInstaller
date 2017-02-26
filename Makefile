@@ -5,10 +5,10 @@ EE_IOP_OBJS = UDNL_irx.o IOMANX_irx.o FILEXIO_irx.o SIO2MAN_irx.o PADMAN_irx.o M
 IRX_DIR = irx/compiled
 
 EE_RES_OBJS = background.o pad_layout.o
-EE_OBJS = main.o ioprstctrl.o modutils.o UI.o menu.o libsecr.o pad.o system.o graphics.o ReqSpaceCalc.o FreeTypeSupport.o $(EE_RES_OBJS) $(EE_IOP_OBJS) mctools_rpc.o
+EE_OBJS = main.o ioprstctrl.o modutils.o UI.o menu.o libsecr.o pad.o system.o graphics.o ReqSpaceCalc.o font.o $(EE_RES_OBJS) $(EE_IOP_OBJS) mctools_rpc.o
 
 EE_INCS := -I$(PS2SDK)/ports/include -I$(PS2SDK)/ee/include -I$(PS2SDK)/common/include -I./irx/source/secrsif/src -I./irx/source/mctools
-EE_LDFLAGS := -L$(PS2SDK)/ports/lib -L$(PS2SDK)/ee/lib -Tlinkfile -s
+EE_LDFLAGS := -L$(PS2SDK)/ports/lib -L$(PS2SDK)/ee/lib -L$(PS2DEV)/ee/ee/lib -Tlinkfile -s
 EE_LIBS = -lgs -lpng -lz -lm -lfreetype -lcdvd -lmc -lpadx -lhdd -lfileXio -lpatches -lc -lkernel
 EE_GPVAL = -G8192
 EE_CFLAGS += -Os -mgpopt $(EE_GPVAL)
@@ -23,7 +23,7 @@ EE_CFLAGS += -Os -mgpopt $(EE_GPVAL)
 	$(EE_AS) $(EE_ASFLAGS) $< -o $@
 
 $(EE_BIN) : $(EE_OBJS) $(PS2SDK)/ee/startup/crt0.o
-	$(EE_CC) $(EE_CFLAGS) -mno-crt0 $(EE_LDFLAGS) -o $(EE_BIN) $(EE_OBJS) $(PS2SDK)/ee/startup/crt0.o $(EE_LIBS)
+	$(EE_CC) $(EE_CFLAGS) -nostartfiles $(EE_LDFLAGS) -o $(EE_BIN) $(EE_OBJS) $(PS2SDK)/ee/startup/crt0.o $(EE_LIBS)
 
 all:
 	$(MAKE) $(EE_BIN)
@@ -83,7 +83,7 @@ ATAD_irx.o:
 	bin2o $(EE_GPVAL) $(PS2SDK)/iop/irx/ps2atad.irx ATAD_irx.o ATAD_irx
 
 HDD_irx.o:
-	bin2o $(EE_GPVAL) $(PS2SDK)/iop/irx/ps2hdd.irx HDD_irx.o HDD_irx
+	bin2o $(EE_GPVAL) $(IRX_DIR)/ps2hdd.irx HDD_irx.o HDD_irx
 
 PFS_irx.o:
 	bin2o $(EE_GPVAL) $(PS2SDK)/iop/irx/ps2fs.irx PFS_irx.o PFS_irx

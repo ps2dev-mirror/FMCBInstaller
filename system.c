@@ -34,6 +34,7 @@
 
 extern void *_gp;
 extern int errno __attribute__((section("data")));
+extern unsigned short int SelectButton, CancelButton;
 
 int GetBootDeviceID(const char *path){
 	int result;
@@ -189,7 +190,7 @@ static struct InstallationFile SysResourceFiles[SYS_FOLDER_RESOURCES_NUM_FILES]=
 	}
 };
 
-#define BASE_INSTALL_NUM_FILES	9
+#define BASE_INSTALL_NUM_FILES	6
 static struct InstallationFile BaseFiles[BASE_INSTALL_NUM_FILES]={
 	{
 		"SYS-CONF/FMCB_CFG.ELF",
@@ -214,31 +215,16 @@ static struct InstallationFile BaseFiles[BASE_INSTALL_NUM_FILES]={
 	{
 		"SYS-CONF/USBD.IRX",
 		"SYS-CONF/USBD.IRX",
-		FILE_IS_OPTIONAL
+		0
 	},
 	{
 		"SYS-CONF/USBHDFSD.IRX",
 		"SYS-CONF/USBHDFSD.IRX",
-		FILE_IS_OPTIONAL
-	},
-	{
-		"BOOT/BOOT.ELF",
-		"BOOT/BOOT.ELF",
-		FILE_IS_OPTIONAL
-	},
-	{
-		"BOOT/BOOT.ICN",
-		"BOOT/BOOT.icn",
-		FILE_IS_OPTIONAL
-	},
-	{
-		"BOOT/ICON.SYS",
-		"BOOT/icon.sys",
-		FILE_IS_OPTIONAL
+		0
 	}
 };
 
-#define HDD_BASE_INSTALL_NUM_FILES	23
+#define HDD_BASE_INSTALL_NUM_FILES	22
 static struct InstallationFile HDDBaseFiles[HDD_BASE_INSTALL_NUM_FILES]={
 	{
 		"SYS-CONF/FREEHDB.CNF",
@@ -253,18 +239,12 @@ static struct InstallationFile HDDBaseFiles[HDD_BASE_INSTALL_NUM_FILES]={
 	{
 		"SYS-CONF/USBD.IRX",
 		"hdd0:__sysconf:pfs:/FMCB/USBD.IRX",
-		FILE_IS_OPTIONAL
+		0
 	},
 	{
 		"SYS-CONF/USBHDFSD.IRX",
 		"hdd0:__sysconf:pfs:/FMCB/USBHDFSD.IRX",
-		FILE_IS_OPTIONAL
-	},
-	//BOOT
-	{
-		"BOOT/BOOT.ELF",
-		"hdd0:__sysconf:pfs:/FMCB/BOOT.ELF",
-		FILE_IS_OPTIONAL
+		0
 	},
 	//FSCK
 	{
@@ -418,6 +398,7 @@ static struct FileAlias FileAlias[NUM_CROSSLINKED_FILES]={
 static char MGFolderRegion, PS2SystemType;
 static unsigned short int ROMVersion;
 static char SysExecFolder[]="BREXEC-SYSTEM";	//Read above.
+static char PSXSysExecFolder[]="BIEXEC-SYSTEM";
 static char SysExecFile[12];	/* E.g. "osdmain.elf" or "osd110.elf" */
 static char romver[16];
 
@@ -649,7 +630,7 @@ static int CreateBasicFolders(int port, int slot, unsigned int flags){
 
 	if(result>=0){
 		if(!(flags&INSTALL_MODE_FLAG_MULTI_INST) && !(flags&INSTALL_MODE_FLAG_CROSS_REG)){
-			if((result=mcMkDir(port, slot, SysExecFolder))==0){
+			if((result=mcMkDir(port, slot, (flags & INSTALL_MODE_FLAG_CROSS_PSX) ? PSXSysExecFolder : SysExecFolder))==0){
 				mcSync(0, NULL, &result);
 				if(result==-4) result=0;	//EEXIST doesn't count as an error.
 			}
@@ -870,6 +851,8 @@ static int AddDirContentsToFileCopyList(const char *RootFolderPath, const char *
 						if(FIO_S_ISDIR(dirent.stat.mode)){
 							NewFileCopyTarget->size=0;
 							result=AddDirContentsToFileCopyList(RootFolderPath, NewFileCopyTarget->source, NewFileCopyTarget->target, CurrentLevel+1, FileCopyList, CurrentNumFiles, CurrentNumDirs, TotalRequiredSpaceForFiles);
+							if(result < 0)
+								break;
 						}
 						else{
 							NewFileCopyTarget->size=dirent.stat.size;
@@ -1077,11 +1060,8 @@ static int CopyFilesToHDD(const char *RootFolder, const struct FileCopyTarget *F
 
 					free(path);
 
-					if(FileCopyList[i].flags&FILE_IS_OPTIONAL) continue;
-					else{
-						result=(-errno)|ERROR_SIDE_SRC;
-						break;
-					}
+					result=(-errno)|ERROR_SIDE_SRC;
+					break;
 				}
 
 				free(path);
@@ -1207,7 +1187,6 @@ int CleanupHDDTarget(void){
 			fileXioRemove("pfs0:/FMCB/FMCB_CFG.ELF");
 			fileXioRemove("pfs0:/FMCB/USBD.IRX");
 			fileXioRemove("pfs0:/FMCB/USBHDFSD.IRX");
-			fileXioRemove("pfs0:/FMCB/BOOT.ELF");
 			DeleteFolderIfEmpty("pfs0:/FMCB");
 
 			fileXioUmount("pfs0:");
@@ -1252,7 +1231,7 @@ static int GetAllBaseFileStats(char MGLetter, const char *RootFolder, struct Fil
 
 int PerformHDDInstallation(unsigned int flags){
 	struct FileCopyTarget *FileCopyList;
-	unsigned int NumFiles, NumDirectories, i, file, TotalRequiredSpaceForFiles;
+	unsigned int NumFiles, NumDirectories, i, file, TotalRequiredSpaceForFiles, CurrNumFiles, CurrNumFolders;
 	int result;
 	unsigned int AvailableSpace, TotalRequiredSpace;
 	u32 FreeSectors;
@@ -1323,38 +1302,63 @@ int PerformHDDInstallation(unsigned int flags){
 		//Start getting the sizes and attributes of the files.
 		result=GetAllBaseFileStats(MGFolderRegion, RootFolder, FileCopyList, NumFiles, &TotalRequiredSpaceForFiles);
 
-		//Add files in the APPS folder to the file list.
+		//Add files in the BOOT-HDD folder to the file list.
 		if(result>=0){
-			if((result=AddDirContentsToFileCopyList(RootFolder, "APPS-HDD", "hdd0:PP.FHDB.APPS:pfs:", 1, &FileCopyList, &NumFiles, &NumDirectories, &TotalRequiredSpaceForFiles))<0){
-				DEBUG_PRINTF("AddDirContentsToFileCopyList failed: %d\n", result);
+			if((result=AddDirContentsToFileCopyList(RootFolder, "BOOT-HDD", "hdd0:__sysconf:pfs:/FMCB", 1, &FileCopyList, &NumFiles, &NumDirectories, &TotalRequiredSpaceForFiles))<0){
+				DEBUG_PRINTF("AddDirContentsToFileCopyList (BOOT-HDD) failed: %d\n", result);
 			}
 		}
 
-		//Calculate available and required space.
-		if(fileXioMount("pfs0:", "hdd0:PP.FHDB.APPS", FIO_MT_RDONLY) >= 0)
-		{
-			TotalRequiredSpace=CalculateRequiredSpace(FileCopyList, NumFiles, NumDirectories);
+		//Add files in the APPS-HDD folder to the file list.
+		if(result>=0){
+			CurrNumFiles = NumFiles;
+			CurrNumFolders = NumDirectories;
 
-			AvailableSpace = fileXioDevctl("pfs0:", PFS_DEVCTL_GET_ZONE_FREE, NULL, 0, NULL, 0) * fileXioDevctl("pfs0:", PFS_DEVCTL_GET_ZONE_SIZE, NULL, 0, NULL, 0);
-			if(AvailableSpace<TotalRequiredSpace){
-				DEBUG_PRINTF("Insuffient space on HDD-APPS: %u required, %u available\n", TotalRequiredSpace, AvailableSpace);
-				DisplayOutOfSpaceMessageHDD_APPS(AvailableSpace, TotalRequiredSpace);
-				result=-ENOSPC;
-			}
+			if((result=AddDirContentsToFileCopyList(RootFolder, "APPS-HDD", "hdd0:PP.FHDB.APPS:pfs:", 1, &FileCopyList, &NumFiles, &NumDirectories, &TotalRequiredSpaceForFiles))<0){
+				DEBUG_PRINTF("AddDirContentsToFileCopyList (APPS-HDD) failed: %d\n", result);
+			} else {
+				//Check if there is anything to copy (copy, only if the APPS-HDD folder exists).
+				if(CurrNumFiles < NumFiles || CurrNumFolders < NumDirectories) {
+					//Calculate available and required space for the APPS partition.
+					if(fileXioMount("pfs0:", "hdd0:PP.FHDB.APPS", FIO_MT_RDONLY) >= 0)
+					{
+						TotalRequiredSpace=CalculateRequiredSpace(FileCopyList, NumFiles, NumDirectories);
 
-			fileXioUmount("pfs0:");
-		} else {
-			//APPS partition may not exist. Determine if one can be created.
-			if(HDDCheckHasSpace(128) == 0)
-			{
-				FreeSectors = 0;
-				fileXioDevctl("hdd0:", APA_DEVCTL_FREE_SECTORS, NULL, 0, &FreeSectors, sizeof(FreeSectors));
-				AvailableSpace = FreeSectors / 2048;	//Sectors in MB = sectors * 512 / 1024 / 1024
-				TotalRequiredSpace = 128;
+						AvailableSpace = fileXioDevctl("pfs0:", PDIOC_ZONEFREE, NULL, 0, NULL, 0) * fileXioDevctl("pfs0:", PDIOC_ZONESZ, NULL, 0, NULL, 0);
+						if(AvailableSpace<TotalRequiredSpace){
+							DEBUG_PRINTF("Insuffient space on HDD-APPS: %u required, %u available\n", TotalRequiredSpace, AvailableSpace);
+							DisplayOutOfSpaceMessageHDD_APPS(AvailableSpace, TotalRequiredSpace);
+							result=-ENOSPC;
+						}
 
-				DEBUG_PRINTF("Insuffient space on HDD: %uMB required, %uMB available\n", TotalRequiredSpace, AvailableSpace);
-				DisplayOutOfSpaceMessageHDD(AvailableSpace, TotalRequiredSpace);
-				result=-ENOSPC;
+						fileXioUmount("pfs0:");
+					} else {
+						//APPS partition may not exist. Determine if one can be created.
+						if(HDDCheckHasSpace(128) == 0)
+						{
+							FreeSectors = 0;
+							fileXioDevctl("hdd0:", HDIOC_FREESECTOR, NULL, 0, &FreeSectors, sizeof(FreeSectors));
+							AvailableSpace = FreeSectors / 2048;	//Sectors in MB = sectors * 512 / 1024 / 1024
+							TotalRequiredSpace = 128;
+
+							DEBUG_PRINTF("Insuffient space on HDD: %uMB required, %uMB available\n", TotalRequiredSpace, AvailableSpace);
+							DisplayOutOfSpaceMessageHDD(AvailableSpace, TotalRequiredSpace);
+							result=-ENOSPC;
+						} else {
+							if((result = CreateAPPSPartition()) < 0)
+							{
+								DEBUG_PRINTF("CreateAPPSPartition failed: %d\n", result);
+							} else {
+								//Partition created successfully. Write attribute data.
+								if((result = WriteAPPSPartitionAttributes()) < 0)
+								{
+									DEBUG_PRINTF("WriteAPPSPartitionAttributes failed: %d\n", result);
+									DeleteAPPSPartition();
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 
@@ -1368,20 +1372,6 @@ int PerformHDDInstallation(unsigned int flags){
 		if(result>=0){
 			if((result=CreateBasicFoldersOnHDD(flags))<0){
 				DEBUG_PRINTF("CreateBasicFoldersOnHDD failed: %d\n", result);
-			} else {
-				if((result = CreateAPPSPartition()) < 0)
-				{
-					if(result == -EEXIST)	//-EEXIST doesn't count as an error.
-						result = 0;
-					else
-						DEBUG_PRINTF("CreateAPPSPartition failed: %d\n", result);
-				} else {
-					if((result = WriteAPPSPartitionAttributes()) < 0)
-					{
-						DEBUG_PRINTF("WriteAPPSPartitionAttributes failed: %d\n", result);
-						DeleteAPPSPartition();
-					}
-				}
 			}
 		}
 
@@ -1684,10 +1674,17 @@ int PerformInstallation(unsigned char port, unsigned char slot, unsigned int fla
 		//Start getting the sizes and attributes of the files.
 		result=GetAllBaseFileStats(MGLetter, RootFolder, FileCopyList, NumFiles, &TotalRequiredSpaceForFiles);
 
-		//Add files in the APPS to the file list.
+		//Add files in the BOOT folder to the file list.
+		if(result>=0){
+			if((result=AddDirContentsToFileCopyList(RootFolder, "BOOT", "BOOT", 1, &FileCopyList, &NumFiles, &NumDirectories, &TotalRequiredSpaceForFiles))<0){
+				DEBUG_PRINTF("AddDirContentsToFileCopyList (BOOT) failed: %d\n", result);
+			}
+		}
+
+		//Add files in the APPS folder to the file list.
 		if(result>=0){
 			if((result=AddDirContentsToFileCopyList(RootFolder, "APPS", "APPS", 1, &FileCopyList, &NumFiles, &NumDirectories, &TotalRequiredSpaceForFiles))<0){
-				DEBUG_PRINTF("AddDirContentsToFileCopyList failed: %d\n", result);
+				DEBUG_PRINTF("AddDirContentsToFileCopyList (APPS) failed: %d\n", result);
 			}
 		}
 
@@ -1768,8 +1765,13 @@ static int SyncMCFileWrite(int fd, int size, void *Buffer){
 	/* Free the buffer. */
 	if(Buffer!=NULL) free(Buffer);
 
-	if(result!=size){
-		result=-EIO;
+	if(result < 0)
+		DEBUG_PRINTF("Memory Card write failed: %d\n", result);
+	else {
+		if(result!=size){
+			DEBUG_PRINTF("Memory Card write size mismatch: %d\n", result);
+			result=-EIO;
+		}
 	}
 
 	mcSync(0, NULL, NULL);
@@ -1816,11 +1818,8 @@ static int CopyFiles(const char *RootFolder, unsigned char port, unsigned char s
 
 				free(path);
 
-				if(FileCopyList[i].flags&FILE_IS_OPTIONAL) continue;
-				else{
-					result=(-errno)|ERROR_SIDE_SRC;
-					break;
-				}
+				result=(-errno)|ERROR_SIDE_SRC;
+				break;
 			}
 
 			free(path);
@@ -1866,6 +1865,7 @@ static int CopyFiles(const char *RootFolder, unsigned char port, unsigned char s
 					mcSync(0, NULL, &McFileFD);
 
 					if(McFileFD<0){
+						DEBUG_PRINTF("Failed to create file on memory card: %s (%d)\n", FileCopyList[i].target, McFileFD);
 						result=McFileFD;
 					}
 					else{
@@ -2409,7 +2409,7 @@ int PerformMemoryCardDump(int port, int slot)
 			PercentageComplete=GetWorkerThreadProgress();
 
 			PadStatus=ReadCombinedPadStatus();
-			if(PadStatus&PAD_CROSS){
+			if(PadStatus&CancelButton){
 				if(DisplayPromptMessage(SYS_UI_MSG_QUIT_DUMPING, SYS_UI_LBL_NO, SYS_UI_LBL_YES) == 2)
 				{
 					SendWorkerThreadCommand(WORKER_THREAD_CMD_STOP, NULL);
@@ -2480,7 +2480,7 @@ int PerformMemoryCardRestore(int port, int slot)
 			PercentageComplete=GetWorkerThreadProgress();
 
 			PadStatus=ReadCombinedPadStatus();
-			if(PadStatus&PAD_CROSS){
+			if(PadStatus&CancelButton){
 				if(DisplayPromptMessage(SYS_UI_MSG_QUIT_RESTORING, SYS_UI_LBL_NO, SYS_UI_LBL_YES) == 2)
 				{
 					SendWorkerThreadCommand(WORKER_THREAD_CMD_STOP, NULL);
@@ -2761,7 +2761,7 @@ int CreateAPPSPartition(void)
 	u8 *fill;
 	int result, fd;
 
-	if((fd=fileXioOpen("hdd0:PP.FHDB.APPS,128M", O_WRONLY | O_CREAT, 0644)) >= 0)
+	if((fd=fileXioOpen("hdd0:PP.FHDB.APPS,,,128M,PFS", O_WRONLY | O_CREAT, 0644)) >= 0)
 	{
 		if((fill = memalign(64, 512)) != NULL)
 		{
@@ -2970,7 +2970,7 @@ int HDDCheckHasSpace(unsigned int PartSize)	//Partition size in MBytes
 	{
 		while(fileXioDread(fd, &dirent) > 0)
 		{
-			size = (u32)((dirent.stat.size | ((u64)dirent.stat.hisize << 32)) / 512);
+			size = dirent.stat.size;
 			used += size;
 
 			if(dirent.stat.mode == APA_TYPE_FREE)

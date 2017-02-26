@@ -10,7 +10,6 @@ static SifRpcClientData_t MCTOOLS_rpc_cd;
 static struct MCTools_AlignmentData MCTools_BufferAlignmentData ALIGNED(16);
 static void *IopBuffer;
 
-//static int RpcCompletionSema=-1;
 static unsigned int IopBufferSize;
 static unsigned char TransmitBuffer[1024] ALIGNED(64);
 static unsigned char ReceiveBuffer[64] ALIGNED(64);
@@ -22,7 +21,6 @@ static void MCTOOLS_RpcEndFunc(void *AlignmentData){
 
 void InitMCTOOLS(void){
 	void *data;
-//	ee_sema_t sema;
 
 	while((SifBindRpc(&MCTOOLS_rpc_cd, MCTOOLS_RPC_NUM, 0)<0) || (MCTOOLS_rpc_cd.server == NULL)) nopdelay();
 	IopBufferSize=8192;
@@ -30,28 +28,27 @@ void InitMCTOOLS(void){
 
 	data=&MCTools_BufferAlignmentData;
 	SifCallRpc(&MCTOOLS_rpc_cd, MCTOOLS_Init, 0, &data, sizeof(void *), NULL, 0, NULL, NULL);
-
-/*	sema.max_count=1;
-	sema.init_count=1;
-	sema.attr=0;
-	sema.option=0;
-	RpcCompletionSema=CreateSema(&sema); */
 }
 
 void DeinitMCTOOLS(void){
 	memset(&MCTOOLS_rpc_cd, 0, sizeof(SifRpcClientData_t));
 	if(IopBuffer!=NULL) SifFreeIopHeap(IopBuffer);
-//	if(RpcCompletionSema>=0) DeleteSema(RpcCompletionSema);
 }
 
 static int CheckIOPBufferSize(int size){
 	int result;
 
-	result=0;
 	if(size>IopBufferSize){
 		if(IopBuffer!=NULL) SifFreeIopHeap(IopBuffer);
-		result=((IopBuffer=SifAllocIopHeap(size))!=NULL)?size:-ENOMEM;
-	}
+		if((IopBuffer=SifAllocIopHeap(size))!=NULL){
+			result=size;
+			IopBufferSize=size;
+		} else {
+			result=-ENOMEM;
+			IopBufferSize=0;
+		}
+	} else
+		result=0;
 
 	return result;
 }
@@ -134,12 +131,6 @@ int MCToolsFlushPageCache(void){
 /*
  *	Functions starting from here onwards are asynchronous or are helper functions for asynchronous functions.
  */
-/* static void AsyncRpcCallbackFunction(void *AlignmentData){
-	if(AlignmentData!=NULL) MCTOOLS_RpcEndFunc(AlignmentData);
-
-	iSignalSema(RpcCompletionSema);
-} */
-
 int MCToolsAsyncGetLastError(void){
 	return *(int *)ReceiveBuffer;
 }
@@ -147,8 +138,6 @@ int MCToolsAsyncGetLastError(void){
 int MCToolsReadCluster(int port, int slot, unsigned int cluster, unsigned short int ClusterSize, const struct MCTools_McSpecData *McSpecData, void *buffer){
 	int result;
 	struct MCTools_ReadWriteRPCData *ReadClusterRPCData;
-
-//	WaitSema(RpcCompletionSema);
 
 	if(CheckIOPBufferSize(McSpecData->PageSize*ClusterSize)>=0){
 		ReadClusterRPCData=(struct MCTools_ReadWriteRPCData *)TransmitBuffer;
@@ -167,8 +156,6 @@ int MCToolsReadCluster(int port, int slot, unsigned int cluster, unsigned short 
 	}
 	else result=-ENOMEM;
 
-//	if(result<0) SignalSema(RpcCompletionSema);
-
 	return result;
 }
 
@@ -178,8 +165,6 @@ int MCToolsWriteBlock(int port, int slot, unsigned int block, const struct MCToo
 	SifDmaTransfer_t dmat;
 
 	BlockSize=McSpecData->PageSize*McSpecData->BlockSize;
-
-//	WaitSema(RpcCompletionSema);
 
 	if(CheckIOPBufferSize(BlockSize)>=0){
 		WriteBlockRPCData=(struct MCTools_ReadWriteRPCData *)TransmitBuffer;
@@ -204,8 +189,6 @@ int MCToolsWriteBlock(int port, int slot, unsigned int block, const struct MCToo
 	}
 	else result=-ENOMEM;
 
-//	if(result<0) SignalSema(RpcCompletionSema);
-
 	return result;
 }
 
@@ -217,8 +200,6 @@ int MCToolsSync(int mode){
 			result=SifCheckStatRpc(&MCTOOLS_rpc_cd);
 			break;
 		default:
-/*			WaitSema(RpcCompletionSema);
-			SignalSema(RpcCompletionSema); */
 			while(SifCheckStatRpc(&MCTOOLS_rpc_cd)!=0){};
 			result=0;
 	}

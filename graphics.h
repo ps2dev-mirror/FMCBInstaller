@@ -34,6 +34,10 @@ enum ui_button_types{
 	BUTTON_TYPE_SELECT
 };
 
+//Special button types
+#define BUTTON_TYPE_SYS_SELECT	0x40
+#define	BUTTON_TYPE_SYS_CANCEL	0x41
+
 #define GIF_PACKET_MAX	1
 
 struct UIDrawGlobal{
@@ -47,13 +51,15 @@ struct UIDrawGlobal{
 
 int LoadBackground(struct UIDrawGlobal *gsGlobal, GS_IMAGE* Texture);
 int LoadPadGraphics(struct UIDrawGlobal *gsGlobal, GS_IMAGE* Texture);
+void DrawSetFilterMode(struct UIDrawGlobal *gsGlobal, int mode);
 void DrawLine(struct UIDrawGlobal *gsGlobal, short int x1, short int y1, short int x2, short int y2, short int z, GS_RGBAQ rgbaq);
 void DrawSprite(struct UIDrawGlobal *gsGlobal, short int x1, short int y1, short int x2, short int y2, short int z, GS_RGBAQ rgbaq);
 void DrawSpriteTextured(struct UIDrawGlobal *gsGlobal, GS_IMAGE *texture, short int x1, short int y1, short int u1, short int v1, short int x2, short int y2, short int u2, short int v2, short int z, GS_RGBAQ rgbaq);
 void DrawSpriteTexturedClut(struct UIDrawGlobal *gsGlobal, GS_IMAGE *texture, GS_IMAGE *clut, short int x1, short int y1, short int u1, short int v1, short int x2, short int y2, short int u2, short int v2, short int z, GS_RGBAQ rgbaq);
 void UploadClut(struct UIDrawGlobal *gsGlobal, GS_IMAGE *clut, const void *buffer);
 void DrawBackground(struct UIDrawGlobal *gsGlobal, GS_IMAGE *background);
-void DrawButtonLegend(struct UIDrawGlobal *gsGlobal, GS_IMAGE* PadGraphicsTexture, unsigned char ButtonType, float x, float y, int z);
+void DrawButtonLegendWithFeedback(struct UIDrawGlobal *gsGlobal, GS_IMAGE* PadGraphicsTexture, unsigned char ButtonType, short int x, short int y, short int z, short int *xRel);
+void DrawButtonLegend(struct UIDrawGlobal *gsGlobal, GS_IMAGE* PadGraphicsTexture, unsigned char ButtonType, short int x, short int y, short int z);
 void DrawProgressBar(struct UIDrawGlobal *gsGlobal, float percentage, short int x, short int y, short int z, short int len, GS_RGBAQ colour);
 void SyncFlipFB(struct UIDrawGlobal *gsGlobal);
 void ExecSyncClear(struct UIDrawGlobal *gsGlobal);

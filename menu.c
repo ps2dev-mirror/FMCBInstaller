@@ -16,7 +16,7 @@
 #include "system.h"
 #include "pad.h"
 #include "graphics.h"
-#include "FreeTypeSupport.h"
+#include "font.h"
 #include "UI.h"
 #include "menu.h"
 
@@ -78,7 +78,7 @@ static struct UIMenuItem MainMenuItems[]={
 	{MITEM_BUTTON, MAIN_MENU_ID_BTN_EXIT,		MITEM_FLAG_POS_MID, 0, 24, 0, 0, SYS_UI_LBL_EXIT}, {MITEM_BREAK}, {MITEM_BREAK},
 
 	{MITEM_STRING, MAIN_MENU_ID_DESCRIPTION,	MITEM_FLAG_POS_ABS|MITEM_FLAG_READONLY, 0, 0, 32, 370}, {MITEM_BREAK},
-	{MITEM_STRING, MAIN_MENU_ID_VERSION,		MITEM_FLAG_POS_ABS|MITEM_FLAG_READONLY, 0, 0, 4, 420}, {MITEM_BREAK},
+	{MITEM_STRING, MAIN_MENU_ID_VERSION,		MITEM_FLAG_POS_ABS|MITEM_FLAG_READONLY, 0, 0, 520, 420}, {MITEM_BREAK},
 
 	{MITEM_TERMINATOR}
 };
@@ -93,7 +93,7 @@ static struct UIMenuItem ExtraMenuItems[]={
 	{MITEM_BUTTON, MAIN_MENU_ID_BTN_UINST_FHDB,	MITEM_FLAG_POS_MID, 0, 24, 0, 0, SYS_UI_LBL_UINSTALL_FHDB}, {MITEM_BREAK}, {MITEM_BREAK},
 
 	{MITEM_STRING, MAIN_MENU_ID_DESCRIPTION,	MITEM_FLAG_POS_ABS|MITEM_FLAG_READONLY, 0, 0, 32, 370}, {MITEM_BREAK},
-	{MITEM_STRING, MAIN_MENU_ID_VERSION,		MITEM_FLAG_POS_ABS|MITEM_FLAG_READONLY, 0, 0, 4, 420}, {MITEM_BREAK},
+	{MITEM_STRING, MAIN_MENU_ID_VERSION,		MITEM_FLAG_POS_ABS|MITEM_FLAG_READONLY, 0, 0, 520, 420}, {MITEM_BREAK},
 
 	{MITEM_TERMINATOR}
 };
@@ -108,7 +108,7 @@ static struct UIMenuItem MCMenuItems[]={
 	{MITEM_BUTTON, MAIN_MENU_ID_BTN_REST_MC,	MITEM_FLAG_POS_MID, 0, 24, 0, 0, SYS_UI_LBL_REST_MC}, {MITEM_BREAK}, {MITEM_BREAK},
 
 	{MITEM_STRING, MAIN_MENU_ID_DESCRIPTION,	MITEM_FLAG_POS_ABS|MITEM_FLAG_READONLY, 0, 0, 32, 370}, {MITEM_BREAK},
-	{MITEM_STRING, MAIN_MENU_ID_VERSION,		MITEM_FLAG_POS_ABS|MITEM_FLAG_READONLY, 0, 0, 4, 420}, {MITEM_BREAK},
+	{MITEM_STRING, MAIN_MENU_ID_VERSION,		MITEM_FLAG_POS_ABS|MITEM_FLAG_READONLY, 0, 0, 520, 420}, {MITEM_BREAK},
 
 	{MITEM_TERMINATOR}
 };
@@ -157,11 +157,12 @@ static struct UIMenuItem InsuffSpaceScreenItems[]={
 static struct UIMenu InstallMainMenu;
 static struct UIMenu ExtraMenu;
 
-static struct UIMenu MCMenu = {NULL, &ExtraMenu, MCMenuItems};
-static struct UIMenu ExtraMenu = {&MCMenu, &InstallMainMenu, ExtraMenuItems};
-static struct UIMenu InstallMainMenu = {&ExtraMenu, NULL, MainMenuItems};
-static struct UIMenu ProgressScreen = {NULL, NULL, ProgressScreenItems};
-static struct UIMenu InsuffSpaceScreen = {NULL, NULL, InsuffSpaceScreenItems};
+static struct UIMenu MCMenu = {NULL, &ExtraMenu, MCMenuItems, {{BUTTON_TYPE_SYS_SELECT, SYS_UI_LBL_OK}, {BUTTON_TYPE_SYS_CANCEL, SYS_UI_LBL_EXIT}}};
+static struct UIMenu ExtraMenu = {&MCMenu, &InstallMainMenu, ExtraMenuItems, {{BUTTON_TYPE_SYS_SELECT, SYS_UI_LBL_OK}, {BUTTON_TYPE_SYS_CANCEL, SYS_UI_LBL_EXIT}}};
+static struct UIMenu InstallMainMenu = {&ExtraMenu, NULL, MainMenuItems, {{BUTTON_TYPE_SYS_SELECT, SYS_UI_LBL_OK}, {BUTTON_TYPE_SYS_CANCEL, SYS_UI_LBL_EXIT}}};
+
+static struct UIMenu ProgressScreen = {NULL, NULL, ProgressScreenItems, {{BUTTON_TYPE_SYS_CANCEL, SYS_UI_LBL_CANCEL}, {-1, -1}}};
+static struct UIMenu InsuffSpaceScreen = {NULL, NULL, InsuffSpaceScreenItems, {{BUTTON_TYPE_SYS_SELECT, SYS_UI_LBL_OK}, {-1, -1}}};
 
 static unsigned char ProcessSpaceValue(unsigned long int space, unsigned int *ProcessedSpace)
 {
@@ -195,7 +196,7 @@ static void DrawMenuEntranceSlideInMenuAnimation(int SelectedOption)
 		DrawSprite(&UIDrawGlobal,	0, 0,
 						UIDrawGlobal.width, UIDrawGlobal.height,
 						0, rgbaq);
-		UIDrawMenu(&InstallMainMenu, UI_OFFSET_X + i * 6, UI_OFFSET_Y, SelectedOption);
+		UIDrawMenu(&InstallMainMenu, i, UI_OFFSET_X + i * 6, UI_OFFSET_Y, SelectedOption);
 		SyncFlipFB(&UIDrawGlobal);
 	}
 }
@@ -273,13 +274,14 @@ static int MainMenuUpdateCallback(struct UIMenu *menu, unsigned short int frame,
 void MainMenu(void)
 {
 	int result;
-	unsigned char done, option, event, McPort;
+	unsigned char done, event, McPort;
+	short int option;
 	struct McData McData[2];
 	u32 PadStatus;
 	unsigned int flags;
+	struct UIMenu *CurrentMenu;
 
 	done=0;
-	option=0;
 	memset(McData, 0, sizeof(McData));
 
 	if(IsUnsupportedModel())
@@ -292,13 +294,15 @@ void MainMenu(void)
 	UISetEnabled(&ExtraMenu, MAIN_MENU_ID_BTN_INST_CROSS_PSX, GetPs2Type() == PS2_SYSTEM_TYPE_PS2);
 	UISetEnabled(&ExtraMenu, MAIN_MENU_ID_BTN_INST_FHDB, IsHDDUnitConnected);
 	UISetEnabled(&ExtraMenu, MAIN_MENU_ID_BTN_UINST_FHDB, IsHDDUnitConnected);
+	CurrentMenu = &InstallMainMenu;
+	option = 0;
 
 	DrawMenuEntranceSlideInMenuAnimation(0);
 
 	/* Main loop */
 	while(!done)
 	{
-		option = UIExecMenu(&InstallMainMenu, &MainMenuUpdateCallback);
+		option = UIExecMenu(CurrentMenu, option, &CurrentMenu, &MainMenuUpdateCallback);
 
 		McPort = GetNumMemcardsInserted(McData);
 
@@ -338,7 +342,7 @@ void MainMenu(void)
 				event = EVENT_EXIT;
 		}
 
-		UITransition(&InstallMainMenu, UIMT_LEFT_OUT, option);
+		UITransition(CurrentMenu, UIMT_LEFT_OUT, option);
 
 		switch(event)
 		{
@@ -350,7 +354,9 @@ void MainMenu(void)
 				/* Install */
 				if(McPort>1)
 				{
-					while((McPort = DisplayPromptMessage(SYS_UI_MSG_MULTIPLE_CARDS, SYS_UI_LBL_SLOT1, SYS_UI_LBL_SLOT2)) == 0){};
+					McPort = DisplayPromptMessage(SYS_UI_MSG_MULTIPLE_CARDS, SYS_UI_LBL_SLOT1, SYS_UI_LBL_SLOT2);
+					if (McPort == 0)
+						break;
 					McPort--;
 				} else if(McPort==0) {
 					DisplayErrorMessage(SYS_UI_MSG_NO_CARDS);
@@ -364,7 +370,9 @@ void MainMenu(void)
 				flags=0;
 				if(event==EVENT_INSTALL && GetPs2Type()==PS2_SYSTEM_TYPE_PS2)
 				{
-					while((result = ShowMessageBox(SYS_UI_LBL_INST_TYPE_NORMAL, SYS_UI_LBL_INST_TYPE_CRS_MDL, SYS_UI_LBL_INST_TYPE_CRS_REG, -1, GetUIString(SYS_UI_MSG_INST_PROMPT_INST_TYPE), SYS_UI_LBL_CONFIRM)) == 0){};
+					result = ShowMessageBox(SYS_UI_LBL_INST_TYPE_NORMAL, SYS_UI_LBL_INST_TYPE_CRS_MDL, SYS_UI_LBL_INST_TYPE_CRS_REG, -1, GetUIString(SYS_UI_MSG_INST_PROMPT_INST_TYPE), SYS_UI_LBL_CONFIRM);
+					if(result == 0)
+						break;
 
 					switch(result)
 					{
@@ -433,7 +441,9 @@ void MainMenu(void)
 			case EVENT_CLEANUP_MULTI:
 				if(McPort>1)
 				{
-					while((McPort = DisplayPromptMessage(SYS_UI_MSG_MULTIPLE_CARDS, SYS_UI_LBL_SLOT1, SYS_UI_LBL_SLOT2)) == 0){};
+					McPort = DisplayPromptMessage(SYS_UI_MSG_MULTIPLE_CARDS, SYS_UI_LBL_SLOT1, SYS_UI_LBL_SLOT2);
+					if (McPort == 0)
+						break;
 					McPort--;
 				} else if(McPort==0) {
 					DisplayErrorMessage(SYS_UI_MSG_NO_CARDS);
@@ -478,7 +488,9 @@ void MainMenu(void)
 				/* Format Memory Card */
 				if(McPort>1)
 				{
-					while((McPort = DisplayPromptMessage(SYS_UI_MSG_MULTIPLE_CARDS, SYS_UI_LBL_SLOT1, SYS_UI_LBL_SLOT2)) == 0){};
+					McPort = DisplayPromptMessage(SYS_UI_MSG_MULTIPLE_CARDS, SYS_UI_LBL_SLOT1, SYS_UI_LBL_SLOT2);
+					if (McPort == 0)
+						break;
 					McPort--;
 				} else if(McPort==0) {
 					DisplayErrorMessage(SYS_UI_MSG_NO_CARDS);
@@ -506,7 +518,9 @@ void MainMenu(void)
 			case EVENT_DUMP_MC:
 				if(McPort>1)
 				{
-					while((McPort = DisplayPromptMessage(SYS_UI_MSG_MULTIPLE_CARDS, SYS_UI_LBL_SLOT1, SYS_UI_LBL_SLOT2)) == 0){};
+					McPort = DisplayPromptMessage(SYS_UI_MSG_MULTIPLE_CARDS, SYS_UI_LBL_SLOT1, SYS_UI_LBL_SLOT2);
+					if (McPort == 0)
+						break;
 					McPort--;
 				} else if(McPort==0) {
 					DisplayErrorMessage(SYS_UI_MSG_NO_CARDS);
@@ -544,7 +558,9 @@ void MainMenu(void)
 			case EVENT_RESTORE_MC:
 				if(McPort>1)
 				{
-					while((McPort = DisplayPromptMessage(SYS_UI_MSG_MULTIPLE_CARDS, SYS_UI_LBL_SLOT1, SYS_UI_LBL_SLOT2)) == 0){};
+					McPort = DisplayPromptMessage(SYS_UI_MSG_MULTIPLE_CARDS, SYS_UI_LBL_SLOT1, SYS_UI_LBL_SLOT2);
+					if (McPort == 0)
+						break;
 					McPort--;
 				} else if(McPort==0) {
 					DisplayErrorMessage(SYS_UI_MSG_NO_CARDS);
@@ -658,7 +674,7 @@ void MainMenu(void)
 				break;
 		}
 
-		if(!done) UITransition(&InstallMainMenu, UIMT_LEFT_IN, option);
+		if(!done) UITransition(CurrentMenu, UIMT_LEFT_IN, option);
 	}
 
 	DrawMenuExitAnimation();
@@ -679,10 +695,12 @@ void InitProgressScreen(int label)
 		case SYS_UI_LBL_RESTORING_MC:
 			ETAIndicator = 1;
 			RateIndicator = 1;
+			ProgressScreen.hints[0].button = BUTTON_TYPE_SYS_CANCEL;
 			break;
 		default:
 			ETAIndicator = 0;
 			RateIndicator = 0;
+			ProgressScreen.hints[0].button = -1;
 	}
 
 	UISetVisible(&ProgressScreen, PRG_SCREEN_ID_ETA_LBL, ETAIndicator);
@@ -703,7 +721,7 @@ void InitProgressScreen(int label)
 void DrawFileCopyProgressScreen(float PercentageComplete)
 {
 	UISetValue(&ProgressScreen, PRG_SCREEN_ID_PROGRESS, (int)(PercentageComplete * 100));
-	UIDrawMenu(&ProgressScreen, 0, 0, -1);
+	UIDrawMenu(&ProgressScreen, 0, 0, 0, -1);
 
 	SyncFlipFB(&UIDrawGlobal);
 }
@@ -744,10 +762,7 @@ void DrawMemoryCardDumpingProgressScreen(float PercentageComplete, unsigned int 
 		}
 	}
 
-	UIDrawMenu(&ProgressScreen, 0, 0, -1);
-
-	DrawButtonLegend(&UIDrawGlobal, &PadLayoutTexture, BUTTON_TYPE_CROSS, 240, 360, 4);
-	FreeTypePrintf(&UIDrawGlobal, 280, 362, 1, 1.0f, GS_WHITE_FONT, GetUILabel(SYS_UI_LBL_CANCEL));
+	UIDrawMenu(&ProgressScreen, 0, 0, 0, -1);
 
 	SyncFlipFB(&UIDrawGlobal);
 }
@@ -788,10 +803,7 @@ void DrawMemoryCardRestoreProgressScreen(float PercentageComplete, unsigned int 
 		}
 	}
 
-	UIDrawMenu(&ProgressScreen, 0, 0, -1);
-
-	DrawButtonLegend(&UIDrawGlobal, &PadLayoutTexture, BUTTON_TYPE_CROSS, 240, 360, 4);
-	FreeTypePrintf(&UIDrawGlobal, 280, 362, 1, 1.0f, GS_WHITE_FONT, GetUILabel(SYS_UI_LBL_CANCEL));
+	UIDrawMenu(&ProgressScreen, 0, 0, 0, -1);
 
 	SyncFlipFB(&UIDrawGlobal);
 }
@@ -810,7 +822,7 @@ void DisplayOutOfSpaceMessage(unsigned int AvailableSpace, unsigned int Required
 	UISetValue(&InsuffSpaceScreen, INSUFF_SPC_SCREEN_ID_AVAIL_SPC, AvailableSpaceProcessed);
 	UISetValue(&InsuffSpaceScreen, INSUFF_SPC_SCREEN_ID_REQD_SPC, RequiredSpaceProcessed);
 
-	UIExecMenu(&InsuffSpaceScreen, NULL);
+	UIExecMenu(&InsuffSpaceScreen, 0, NULL, NULL);
 }
 
 void DisplayOutOfSpaceMessageHDD_APPS(unsigned int AvailableSpace, unsigned int RequiredSpace)
@@ -826,7 +838,7 @@ void DisplayOutOfSpaceMessageHDD_APPS(unsigned int AvailableSpace, unsigned int 
 	UISetValue(&InsuffSpaceScreen, INSUFF_SPC_SCREEN_ID_AVAIL_SPC, AvailableSpaceProcessed);
 	UISetValue(&InsuffSpaceScreen, INSUFF_SPC_SCREEN_ID_REQD_SPC, RequiredSpaceProcessed);
 
-	UIExecMenu(&InsuffSpaceScreen, NULL);
+	UIExecMenu(&InsuffSpaceScreen, 0, NULL, NULL);
 }
 
 void DisplayOutOfSpaceMessageHDD(unsigned int AvailableSpace, unsigned int RequiredSpace)
@@ -847,7 +859,7 @@ void DisplayOutOfSpaceMessageHDD(unsigned int AvailableSpace, unsigned int Requi
 	UISetValue(&InsuffSpaceScreen, INSUFF_SPC_SCREEN_ID_AVAIL_SPC, AvailableSpaceProcessed);
 	UISetValue(&InsuffSpaceScreen, INSUFF_SPC_SCREEN_ID_REQD_SPC, RequiredSpaceProcessed);
 
-	UIExecMenu(&InsuffSpaceScreen, NULL);
+	UIExecMenu(&InsuffSpaceScreen, 0, NULL, NULL);
 }
 
 void RedrawLoadingScreen(unsigned int frame)
@@ -860,19 +872,19 @@ void RedrawLoadingScreen(unsigned int frame)
 	NumDots=frame%240/60;
 
 	DrawBackground(&UIDrawGlobal, &BackgroundTexture);
-	FreeTypePrintf(&UIDrawGlobal, 10, 10, 0, 1.5f, GS_WHITE_FONT, "FMCBInstaller v"FMCB_INSTALLER_VERSION);
+	FontPrintf(&UIDrawGlobal, 10, 10, 0, 1.5f, GS_WHITE_FONT, "FMCBInstaller v"FMCB_INSTALLER_VERSION);
 
-	FreeTypePrintf(&UIDrawGlobal, 420, 380, 0, 1.0f, GS_WHITE_FONT, "Loading");
+	FontPrintf(&UIDrawGlobal, 420, 380, 0, 1.0f, GS_WHITE_FONT, "Loading");
 	switch(NumDots)
 	{
 		case 1:
-			FreeTypePrintf(&UIDrawGlobal, 560, 380, 0, 1.0f, GS_WHITE_FONT, ".");
+			FontPrintf(&UIDrawGlobal, 560, 380, 0, 1.0f, GS_WHITE_FONT, ".");
 			break;
 		case 2:
-			FreeTypePrintf(&UIDrawGlobal, 560, 380, 0, 1.0f, GS_WHITE_FONT, "..");
+			FontPrintf(&UIDrawGlobal, 560, 380, 0, 1.0f, GS_WHITE_FONT, "..");
 			break;
 		case 3:
-			FreeTypePrintf(&UIDrawGlobal, 560, 380, 0, 1.0f, GS_WHITE_FONT, "...");
+			FontPrintf(&UIDrawGlobal, 560, 380, 0, 1.0f, GS_WHITE_FONT, "...");
 			break;
 	}
 

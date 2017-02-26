@@ -11,7 +11,7 @@
 #include "graphics.h"
 #include "pad.h"
 
-#include "FreeTypeSupport.h"
+#include "font.h"
 
 extern int VBlankStartSema;
 static GS_GIF_TAG *LastGIFPacket = NULL;
@@ -198,6 +198,18 @@ int LoadPadGraphics(struct UIDrawGlobal *gsGlobal, GS_IMAGE* Texture){
 	return LoadPNGImage(gsGlobal, Texture, pad_layout_start, pad_layout_size);
 }
 
+void DrawSetFilterMode(struct UIDrawGlobal *gsGlobal, int mode)
+{
+	u64 *p;
+
+	//Use the uncached segment, to avoid needing to flush the data cache.
+	p = (u64*)UNCACHED_SEG(GsGifPacketsAlloc(&gsGlobal->giftable, 2));
+	LastGIFPacket = (GS_GIF_TAG*)p;
+
+	gs_setGIF_TAG(((GS_GIF_TAG	*)&p[0]), 1,0,0,0,GS_GIF_PACKED, 1, gif_rd_ad);
+	gs_setR_TEX1_1(((GS_R_TEX1	*)&p[1]), 0, 0, mode, mode, 0, 0, 0);
+}
+
 void DrawLine(struct UIDrawGlobal *gsGlobal, short int x1, short int y1, short int x2, short int y2, short int z, GS_RGBAQ rgbaq)
 {
 	u64 *p;
@@ -206,7 +218,7 @@ void DrawLine(struct UIDrawGlobal *gsGlobal, short int x1, short int y1, short i
 	p = (u64*)UNCACHED_SEG(GsGifPacketsAlloc(&gsGlobal->giftable, 3)); //Allocate 3 qwords for 1 untextured line
 	LastGIFPacket = (GS_GIF_TAG*)p;
 
-	gs_setGIF_TAG(((GS_GIF_TAG	*)&p[0]), 1,0,0,0,1,4, gs_g_prim | gs_g_rgbaq << 4 | gs_g_xyz2 << 8 | gs_g_xyz2 << 12);
+	gs_setGIF_TAG(((GS_GIF_TAG	*)&p[0]), 1,0,0,0,GS_GIF_REGLIST,4, gs_g_prim | gs_g_rgbaq << 4 | gs_g_xyz2 << 8 | gs_g_xyz2 << 12);
 	//prim_type = GS_PRIM_LINE, abe = 1
 	gs_setPRIM(((GS_PRIM		*)&p[2]), GS_PRIM_LINE, 0, 0, 0, 1, 0, 0, 0, 0);
 	*(GS_RGBAQ*)&p[3] = rgbaq;
@@ -222,7 +234,7 @@ void DrawSprite(struct UIDrawGlobal *gsGlobal, short int x1, short int y1, short
 	p = (u64*)UNCACHED_SEG(GsGifPacketsAlloc(&gsGlobal->giftable, 3)); //Allocate 3 qwords for 1 untextured sprite
 	LastGIFPacket = (GS_GIF_TAG*)p;
 
-	gs_setGIF_TAG(((GS_GIF_TAG	*)&p[0]), 1,0,0,0,1,4, gs_g_prim | gs_g_rgbaq << 4 | gs_g_xyz2 << 8 | gs_g_xyz2 << 12);
+	gs_setGIF_TAG(((GS_GIF_TAG	*)&p[0]), 1,0,0,0,GS_GIF_REGLIST,4, gs_g_prim | gs_g_rgbaq << 4 | gs_g_xyz2 << 8 | gs_g_xyz2 << 12);
 	//prim_type = GS_PRIM_SPRITE, abe = 1
 	gs_setPRIM(((GS_PRIM		*)&p[2]), GS_PRIM_SPRITE, 0, 0, 0, 1, 0, 0, 0, 0);
 	*(GS_RGBAQ*)&p[3] = rgbaq;
@@ -238,14 +250,14 @@ void DrawSpriteTextured(struct UIDrawGlobal *gsGlobal, GS_IMAGE *texture, short 
 	p = (u64*)UNCACHED_SEG(GsGifPacketsAlloc(&gsGlobal->giftable, 5)); //Allocate 5 qwords for 1 textured sprite
 	LastGIFPacket = (GS_GIF_TAG*)p;
 
-	gs_setGIF_TAG(((GS_GIF_TAG	*)&p[0]), 1,0,0,0,1,8, gs_g_tex0_1 | gs_g_prim << 4 | gs_g_rgbaq << 8 | gs_g_uv << 12 | gs_g_xyz2 << 16 | gs_g_uv << 20 | gs_g_xyz2 << 24 | gif_rd_nop << 28);
+	gs_setGIF_TAG(((GS_GIF_TAG	*)&p[0]), 1,0,0,0,GS_GIF_REGLIST,8, gs_g_tex0_1 | gs_g_prim << 4 | gs_g_rgbaq << 8 | gs_g_uv << 12 | gs_g_xyz2 << 16 | gs_g_uv << 20 | gs_g_xyz2 << 24 | gif_rd_nop << 28);
 	gs_setTEX0_1(((GS_TEX0		*)&p[2]), texture->vram_addr, texture->vram_width, texture->psm, twh(texture->width), twh(texture->height), 1, GS_TEX_MODULATE, 0, 0, 0, 0, 0);
 	//prim_type = GS_PRIM_SPRITE, tme = 1, fst = 1, abe = 1
 	gs_setPRIM(((GS_PRIM		*)&p[3]), GS_PRIM_SPRITE, 0, 1, 0, 1, 0, 1, 0, 0);
 	*(GS_RGBAQ*)&p[4] = rgbaq;
-	gs_setUV(((GS_UV		*)&p[5]), u1 << 4, v1 << 4);
+	gs_setUV(((GS_UV		*)&p[5]), u1 << 4 | 8, v1 << 4 | 8);
 	gs_setXYZ2(((GS_XYZ		*)&p[6]), (gsGlobal->draw_env.offset_x+x1)<<4,	(gsGlobal->draw_env.offset_y+y1)<<4, z<<4);
-	gs_setUV(((GS_UV		*)&p[7]), u2 << 4, v2 << 4);
+	gs_setUV(((GS_UV		*)&p[7]), u2 << 4 | 8, v2 << 4 | 8);
 	gs_setXYZ2(((GS_XYZ		*)&p[8]), (gsGlobal->draw_env.offset_x+x2)<<4,	(gsGlobal->draw_env.offset_y+y2)<<4, z<<4);
 	gs_setNOP(((GS_NOP		*)&p[9]));
 }
@@ -258,14 +270,14 @@ void DrawSpriteTexturedClut(struct UIDrawGlobal *gsGlobal, GS_IMAGE *texture, GS
 	p = (u64*)UNCACHED_SEG(GsGifPacketsAlloc(&gsGlobal->giftable, 5)); //Allocate 5 qwords for 1 textured sprite with CLUT
 	LastGIFPacket = (GS_GIF_TAG*)p;
 
-	gs_setGIF_TAG(((GS_GIF_TAG	*)&p[0]), 1,0,0,0,1,8, gs_g_tex0_1 | gs_g_prim << 4 | gs_g_rgbaq << 8 | gs_g_uv << 12 | gs_g_xyz2 << 16 | gs_g_uv << 20 | gs_g_xyz2 << 24 | gif_rd_nop << 28);
+	gs_setGIF_TAG(((GS_GIF_TAG	*)&p[0]), 1,0,0,0,GS_GIF_REGLIST,8, gs_g_tex0_1 | gs_g_prim << 4 | gs_g_rgbaq << 8 | gs_g_uv << 12 | gs_g_xyz2 << 16 | gs_g_uv << 20 | gs_g_xyz2 << 24 | gif_rd_nop << 28);
 	gs_setTEX0_1(((GS_TEX0		*)&p[2]), texture->vram_addr, texture->vram_width, texture->psm, twh(texture->width), twh(texture->height), 1, GS_TEX_MODULATE, clut->vram_addr, clut->psm, 0, 0, 1);
 	//prim_type = GS_PRIM_SPRITE, tme = 1, fst = 1, abe = 1
 	gs_setPRIM(((GS_PRIM		*)&p[3]), GS_PRIM_SPRITE, 0, 1, 0, 1, 0, 1, 0, 0);
 	*(GS_RGBAQ*)&p[4] = rgbaq;
-	gs_setUV(((GS_UV		*)&p[5]), u1 << 4, v1 << 4);
+	gs_setUV(((GS_UV		*)&p[5]), u1 << 4 | 8, v1 << 4 | 8);
 	gs_setXYZ2(((GS_XYZ		*)&p[6]), (gsGlobal->draw_env.offset_x+x1)<<4,	(gsGlobal->draw_env.offset_y+y1)<<4, z<<4);
-	gs_setUV(((GS_UV		*)&p[7]), u2 << 4, v2 << 4);
+	gs_setUV(((GS_UV		*)&p[7]), u2 << 4 | 8, v2 << 4 | 8);
 	gs_setXYZ2(((GS_XYZ		*)&p[8]), (gsGlobal->draw_env.offset_x+x2)<<4,	(gsGlobal->draw_env.offset_y+y2)<<4, z<<4);
 	gs_setNOP(((GS_NOP		*)&p[9]));
 }
@@ -280,13 +292,13 @@ void UploadClut(struct UIDrawGlobal *gsGlobal, GS_IMAGE *clut, const void *buffe
 	p = (QWORD*)UNCACHED_SEG(GsGifPacketsAlloc(&gsGlobal->giftable, 2));
 	LastGIFPacket = (GS_GIF_TAG*)p;
 
-	gs_setGIF_TAG(((GS_GIF_TAG	*)&p[0]), 1,0,0,0,0,1,gif_rd_ad);
+	gs_setGIF_TAG(((GS_GIF_TAG	*)&p[0]), 1,0,0,0,GS_GIF_PACKED,1,gif_rd_ad);
 	gs_setR_TEXFLUSH((GS_R_TEXFLUSH	*)&p[1]);
 }
 
 struct ButtonLayoutParameters{
-	unsigned int u, v;
-	unsigned int length, width;
+	unsigned short int u, v;
+	unsigned short int length, width;
 };
 
 static const struct ButtonLayoutParameters ButtonLayoutParameters[]=
@@ -311,7 +323,7 @@ static const struct ButtonLayoutParameters ButtonLayoutParameters[]=
 	{80, 0, 38, 18}
 };
 
-void DrawButtonLegend(struct UIDrawGlobal *gsGlobal, GS_IMAGE* PadGraphicsTexture, unsigned char ButtonType, float x, float y, int z)
+void DrawButtonLegendWithFeedback(struct UIDrawGlobal *gsGlobal, GS_IMAGE* PadGraphicsTexture, unsigned char ButtonType, short int x, short int y, short int z, short int *xRel)
 {
 	DrawSpriteTextured(gsGlobal, PadGraphicsTexture,
 				x, y,
@@ -319,6 +331,14 @@ void DrawButtonLegend(struct UIDrawGlobal *gsGlobal, GS_IMAGE* PadGraphicsTextur
 				x+ButtonLayoutParameters[ButtonType].length, y+ButtonLayoutParameters[ButtonType].width,
 				ButtonLayoutParameters[ButtonType].u+ButtonLayoutParameters[ButtonType].length, ButtonLayoutParameters[ButtonType].v+ButtonLayoutParameters[ButtonType].width,
 				z, (GS_RGBAQ){0xFF,0xFF,0xFF,0x80,0x00});
+
+	if(xRel != NULL)
+		*xRel = ButtonLayoutParameters[ButtonType].length;
+}
+
+void DrawButtonLegend(struct UIDrawGlobal *gsGlobal, GS_IMAGE* PadGraphicsTexture, unsigned char ButtonType, short int x, short int y, short int z)
+{
+	DrawButtonLegendWithFeedback(gsGlobal, PadGraphicsTexture, ButtonType, x, y, z, NULL);
 }
 
 void DrawProgressBar(struct UIDrawGlobal *gsGlobal, float percentage, short int x, short int y, short int z, short int len, GS_RGBAQ colour)
@@ -332,7 +352,7 @@ void DrawProgressBar(struct UIDrawGlobal *gsGlobal, float percentage, short int 
 	/* FIXME: For some unknown reason, the progress bar fill is being offset by -10 pixels. */
 	DrawSprite(gsGlobal, x+5, y+5+10, ProgressBarFillEndX, y-5+10, z, colour);
 	snprintf(CharBuffer, sizeof(CharBuffer)/sizeof(char), "%u%%", (unsigned int)(percentage*100));
-	FreeTypePrintf(gsGlobal, x+len/2, y, z - 1, 1.0f, GS_WHITE_FONT, CharBuffer);
+	FontPrintf(gsGlobal, x+len/2, y, z - 1, 1.0f, GS_WHITE_FONT, CharBuffer);
 }
 
 void SyncFlipFB(struct UIDrawGlobal *gsGlobal)

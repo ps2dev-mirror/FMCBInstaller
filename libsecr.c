@@ -69,7 +69,7 @@ void SecrDeinit(void){
 	memset(&SifRpcClient07, 0, sizeof(SifRpcClientData_t));
 }
 
-int SecrDownloadHeader(int port, int slot, void *buffer, SecrBitTable_t *BitTable, int *pSize){
+int SecrDownloadHeader(int port, int slot, void *buffer, SecrBitTable_t *BitTable, s32 *pSize){
 	int result;
 
 	((struct SecrSifDownloadHeaderParams*)RpcBuffer)->port=port;
@@ -158,7 +158,7 @@ int SecrDownloadGetICVPS2(void *icvps2){
 	return result;
 }
 
-int SecrDiskBootHeader(void *buffer, SecrBitTable_t *BitTable, int *pSize){
+int SecrDiskBootHeader(void *buffer, SecrBitTable_t *BitTable, s32 *pSize){
 	int result;
 
 	memcpy(((struct SecrSifDiskBootHeaderParams*)RpcBuffer)->buffer, buffer, sizeof(((struct SecrSifDiskBootHeaderParams*)RpcBuffer)->buffer));

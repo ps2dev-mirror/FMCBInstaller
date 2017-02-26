@@ -17,7 +17,7 @@
 #include "MCIO.h"
 
 #define MODNAME "mctools_ee_driver"
-IRX_ID(MODNAME, 0x01, 0x20);
+IRX_ID(MODNAME, 0x01, 0x21);
 
 /* Data used for registering the RPC servers */
 static SifRpcServerData_t rpc_sdata;
@@ -136,23 +136,26 @@ static int FlushMCMANClusterCache(int port, int slot){
 
 static int UpdateFatTableIndexData(unsigned char port, unsigned char slot, unsigned int index, unsigned int data, struct SCE_MC_Superblock *SuperBlock){
 	unsigned int NumEntriesPerFatCluster, *IndirectFatIndexTable, *FatTable;
-	unsigned int IndirectFatIndexUnk, IndirectFATIndexOffset, IndirectFATIndexIndex;
+	unsigned int IndirectFATIndex, IndirectFATIndexOffset, IndirectFATDoubleIndex;
 	int result;
 
 	if(index>=SuperBlock->clusters){
 		return -EINVAL;
 	}
 
+	/*	Unlike FAT12/16/32, the FAT table is not contiguous. ifc_list contains the indexes of the FAT clusters,
+		hence double-indexing is required for accessing the clusters within the FAT. */
+
 	result=-1;
 	NumEntriesPerFatCluster=SuperBlock->pages_per_cluster*SuperBlock->page_len/4;	/* Calculate the number of FAT entries contained within each FAT cluster. */
-	IndirectFatIndexUnk = index / NumEntriesPerFatCluster;				/* ??? */
-	IndirectFATIndexOffset = IndirectFatIndexUnk % NumEntriesPerFatCluster;		/* Calculate the offset of the indirect FAT index table to retrieve from (It contains the FAT cluster number). */				
-	IndirectFATIndexIndex = IndirectFatIndexUnk / NumEntriesPerFatCluster;		/* Calculate the index of the entry to retrieve from the table containing the cluster numbers of the clusters that make up the indirect FAT index table. */
+	IndirectFATIndex = index / NumEntriesPerFatCluster;				/* Calculate the index within the indirect FAT table, that the FAT record resides in. */
+	IndirectFATIndexOffset = IndirectFATIndex % NumEntriesPerFatCluster;		/* Calculate the offset of the indirect FAT index table to retrieve from (It contains the FAT cluster number). */
+	IndirectFATDoubleIndex = IndirectFATIndex / NumEntriesPerFatCluster;		/* Calculate the index of the entry to retrieve from the table containing the cluster numbers of the clusters that make up the indirect FAT index table. */
 
 	IndirectFatIndexTable=malloc(SuperBlock->pages_per_cluster*SuperBlock->page_len);
 	FatTable=malloc(SuperBlock->pages_per_cluster*SuperBlock->page_len);
 
-	if(ReadCluster(SuperBlock->page_len, SuperBlock->pages_per_cluster, SuperBlock->ifc_list[IndirectFATIndexIndex], IndirectFatIndexTable)>=0){
+	if(ReadCluster(SuperBlock->page_len, SuperBlock->pages_per_cluster, SuperBlock->ifc_list[IndirectFATDoubleIndex], IndirectFatIndexTable)>=0){
 		/* Update the FAT. */
 		if(ReadCluster(SuperBlock->page_len, SuperBlock->pages_per_cluster, IndirectFatIndexTable[IndirectFATIndexOffset], FatTable)>=0){
 			FatTable[index % NumEntriesPerFatCluster]=data;
@@ -187,7 +190,7 @@ static int GetCardFilesystemSuperblock(int port, int slot, struct SCE_MC_Superbl
 	return(result);
 }
 
-static int GetCardSpecs(int port, int slot, unsigned short int *PageSize, unsigned short int *BlockSize, unsigned int *CardSize){
+static int GetCardSpecs(int port, int slot, u16 *PageSize, u16 *BlockSize, int *CardSize){
 	u8 flags;
 	int result;
 
@@ -199,27 +202,26 @@ static int GetCardSpecs(int port, int slot, unsigned short int *PageSize, unsign
 
 static int GetFatTableIndexData(unsigned char port, unsigned char slot, unsigned int index, struct SCE_MC_Superblock *SuperBlock, unsigned int *NextClusterNum){
 	unsigned int NumEntriesPerFatCluster, *IndirectFatIndexTable, *FatTable;
-	unsigned int IndirectFatIndexUnk, IndirectFATIndexOffset, IndirectFATIndexIndex;
+	unsigned int IndirectFATIndex, IndirectFATIndexOffset, IndirectFATDoubleIndex;
 	int result;
 
 	if(index>=SuperBlock->clusters){
 		return -EINVAL;
 	}
 
-	/*
-	 *	I barely understand the mathematical calculations below, but here it goes:
-	 */
+	/*	Unlike FAT12/16/32, the FAT table is not contiguous. ifc_list contains the indexes of the FAT clusters,
+		hence double-indexing is required for accessing the clusters within the FAT. */
 
 	result=-1;
 	NumEntriesPerFatCluster=SuperBlock->pages_per_cluster*SuperBlock->page_len/4;	/* Calculate the number of FAT entries contained within each FAT cluster. */
-	IndirectFatIndexUnk = index / NumEntriesPerFatCluster;				/* ??? */
-	IndirectFATIndexOffset = IndirectFatIndexUnk % NumEntriesPerFatCluster;		/* Calculate the offset of the indirect FAT index table to retrieve from (It contains the FAT cluster number). */				
-	IndirectFATIndexIndex = IndirectFatIndexUnk / NumEntriesPerFatCluster;		/* Calculate the index of the entry to retrieve from the table containing the cluster numbers of the clusters that make up the indirect FAT index table. */
+	IndirectFATIndex = index / NumEntriesPerFatCluster;				/* Calculate the index within the indirect FAT table, that the FAT record resides in. */
+	IndirectFATIndexOffset = IndirectFATIndex % NumEntriesPerFatCluster;		/* Calculate the offset of the indirect FAT index table to retrieve from (It contains the FAT cluster number). */				
+	IndirectFATDoubleIndex = IndirectFATIndex / NumEntriesPerFatCluster;		/* Calculate the index of the entry to retrieve from the table containing the cluster numbers of the clusters that make up the indirect FAT index table. */
 
 	if((IndirectFatIndexTable=malloc(SuperBlock->pages_per_cluster*SuperBlock->page_len))!=NULL){
 		if((FatTable=malloc(SuperBlock->pages_per_cluster*SuperBlock->page_len))!=NULL){
 
-			if((result=ReadCluster(SuperBlock->page_len, SuperBlock->pages_per_cluster, SuperBlock->ifc_list[IndirectFATIndexIndex], IndirectFatIndexTable))>=0){
+			if((result=ReadCluster(SuperBlock->page_len, SuperBlock->pages_per_cluster, SuperBlock->ifc_list[IndirectFATDoubleIndex], IndirectFatIndexTable))>=0){
 				if((result=ReadCluster(SuperBlock->page_len, SuperBlock->pages_per_cluster, IndirectFatIndexTable[IndirectFATIndexOffset], FatTable))>=0){
 					*NextClusterNum=FatTable[index % NumEntriesPerFatCluster];	/* Retrieve the next index contained within the FAT. */
 					result=0;
@@ -283,7 +285,9 @@ static unsigned int AddFATRecord(unsigned char port, unsigned char slot, struct 
 		DEBUG_PRINTF("Begining write operations... ClusterNum=0x%08x\n", ClusterNum);
 
 		if(result>=0){
+			//Update the last cluster's record to point to the newly-allocated cluster.
 			if((result=UpdateFatTableIndexData(port, slot, ClusterNum, 0x80000000|NewRecClusterNum, SuperBlock))>=0){
+				//The new cluster will be at the end of the chain.
 				if((result=UpdateFatTableIndexData(port, slot, NewRecClusterNum, 0xFFFFFFFF, SuperBlock))>=0){
 					result=NewRecClusterNum;
 				}
@@ -294,6 +298,7 @@ static unsigned int AddFATRecord(unsigned char port, unsigned char slot, struct 
 	return result;
 }
 
+#if 0
 /*
  *	Removes a cluster from an existing FAT record chain within the FAT.
  *	Returns the cluster number of the cluster deleted. Returns 0 on error.
@@ -317,8 +322,10 @@ static unsigned int DeleteFATRecord(unsigned char port, unsigned char slot, stru
 
 	if((RecClusterNum&0x7FFFFFFF)==ClusterToDelete){
 		DEBUG_PRINTF("PrevRecClusterNum=0x%08x\nRecClusterNum=0x%08x\nNextRecClusterNum=0x%08x\n\n", PrevRecClusterNum, RecClusterNum, NextRecClusterNum);
+		//Point the previous cluster's record to the one after it.
 		if(UpdateFatTableIndexData(port, slot, PrevRecClusterNum&0x7FFFFFFF, NextRecClusterNum, SuperBlock)>=0){
-			if(UpdateFatTableIndexData(port, slot, RecClusterNum&0x7FFFFFFF, 0x7FFFFFFF, SuperBlock)>=0){
+			//Update the deleted record's next cluster address to unallocated.
+			if(UpdateFatTableIndexData(port, slot, RecClusterNum&0x7FFFFFFF, NextRecClusterNum&0x7FFFFFFF, SuperBlock)>=0){
 				result=ClusterToDelete;
 			}
 		}
@@ -330,7 +337,7 @@ DeleteFATRecord_end:
 	return result;
 }
 
-static int FreeUnusedFATRecords(unsigned char port, unsigned char slot, unsigned int DirEntStartCluster, unsigned int *NumValidRecords, struct SCE_MC_Superblock *SuperBlock){
+static int FreeUnusedFATRecords(unsigned char port, unsigned char slot, u32 DirEntStartCluster, u32 *NumValidRecords, struct SCE_MC_Superblock *SuperBlock){
 	int result;
 	unsigned int LogicalPageNum, ClusterNum, PageNum, PrevClusterNum, recordID, NumDirEntRecords;
 	unsigned char NumberOfUnusedPages, ClustersFreed, NumValidRecordsInCluster;
@@ -354,6 +361,7 @@ static int FreeUnusedFATRecords(unsigned char port, unsigned char slot, unsigned
 	*NumValidRecords=0;
 	NumValidRecordsInCluster=0;
 
+	//Go through the FAT chain of the directory
 	while((result>=0) && (ClusterNum!=0xFFFFFFFF)){
 		if((recordID>0) && (LogicalPageNum==0)){
 			PrevClusterNum=ClusterNum;
@@ -365,6 +373,7 @@ static int FreeUnusedFATRecords(unsigned char port, unsigned char slot, unsigned
 
 			PageNum=(SuperBlock->alloc_start+ClusterNum)*SuperBlock->pages_per_cluster;
 
+			//Count the number of unused pages in the cluster. If the whole cluster is unused, it can be freed.
 			if(NumberOfUnusedPages==SuperBlock->pages_per_cluster){
 				DEBUG_PRINTF("Attempting to delete cluster 0x%08x\n", PrevClusterNum);
 				if(DeleteFATRecord(port, slot, SuperBlock, DirEntStartCluster, PrevClusterNum)!=PrevClusterNum){
@@ -383,6 +392,7 @@ static int FreeUnusedFATRecords(unsigned char port, unsigned char slot, unsigned
 			NumValidRecordsInCluster=0;
 		}
 
+		//Only if the end of the chain has not been reached.
 		if(ClusterNum!=0xFFFFFFFF){
 			/* The actions in here are only valid for valid records (For both erased and existent).
 				Note: There can be unused pages in the last cluster, but that page might not have a valid directory record.
@@ -409,17 +419,18 @@ static int FreeUnusedFATRecords(unsigned char port, unsigned char slot, unsigned
 				(*NumValidRecords)++;
 			}
 			else NumberOfUnusedPages++;	/* Otherwise, remember to count the unused pages that are not part of this directory record list that exist in the last cluster! */
-		}
 
-		recordID++;
-		LogicalPageNum++;
-		if(LogicalPageNum>=SuperBlock->pages_per_cluster) LogicalPageNum=0;
+			recordID++;
+			LogicalPageNum++;
+			if(LogicalPageNum>=SuperBlock->pages_per_cluster) LogicalPageNum=0;
+		}
 	}
 
 	free(PageBuffer);
 
 	return((result>=0)?ClustersFreed:result);
 }
+#endif
 
 static int UpdateDirEntInformation(unsigned char port, unsigned char slot, struct SCE_MC_Superblock *SuperBlock, unsigned int TargetCluster, unsigned int TargetOffsetWithinCluster, struct SCE_MC_dirent *DirEntData){
 	unsigned int ClusterSize;
@@ -673,7 +684,7 @@ static int CreateNewVirtualDirent(unsigned char port, unsigned char slot, const 
 static int DeleteVirtualDirent(unsigned char port, unsigned char slot, const char *path, const char *name, struct SCE_MC_Superblock *SuperBlock){
 	char *PathToFile;
 	struct SCE_MC_dirent DirEntData, ParentDirEnt;
-	int result, ClustersFreed;
+	int result;//, ClustersFreed;
 
 	DEBUG_PRINTF("DeleteVirtualDirent: %s/%s\n", path, name);
 
@@ -682,7 +693,7 @@ static int DeleteVirtualDirent(unsigned char port, unsigned char slot, const cha
 
 		/* Get the information on the file/folder. */
 		if((result=GetFileData(port, slot, PathToFile, &DirEntData, SuperBlock))>=0){
-			DirEntData.mode&=0x7FFF;	/* Clear the "exists" flag to make the entry now non-existent. */
+			DirEntData.mode=0x7FFF;	/* Clear the "exists" flag to make the entry now non-existent (SONY MCMAN sets mode to 0x7FFF). */
 			result=GetSetFileData(port, slot, 0, PathToFile, NULL, &DirEntData, SuperBlock);
 		}
 
@@ -693,12 +704,15 @@ static int DeleteVirtualDirent(unsigned char port, unsigned char slot, const cha
 	if(result>=0){
 		/* Get some information on the parent folder. */
 		if((result=GetFileData(port, slot, path, &ParentDirEnt, SuperBlock))>=0){
+			//The SONY MCMAN module doesn't seem to do this, so don't do this.
+#if 0
 			/* Now for some housekeeping: Free up unused clusters */
 			ClustersFreed=FreeUnusedFATRecords(port, slot, ParentDirEnt.cluster, &ParentDirEnt.length, SuperBlock);
 			DEBUG_PRINTF("%d cluster(s) freed. Records existing: %u\n", ClustersFreed, ParentDirEnt.length);
 
 			/* Update the length of the parent directory. */
 			result=GetSetFileData(port, slot, 0, path, NULL, &ParentDirEnt, SuperBlock);
+#endif
 		}
 	}
 

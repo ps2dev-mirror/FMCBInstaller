@@ -65,7 +65,7 @@ unsigned char calculate_sio2_buffer_checksum(const void *buffer, unsigned int le
 
   	for(checksum=0,i=0; i<length; i++) checksum^=((const unsigned char*)buffer)[i];
 
-	return checksum; 
+	return checksum;
 }
 
 //0x00002814

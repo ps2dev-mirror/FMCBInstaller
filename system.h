@@ -92,7 +92,7 @@ struct WorkerThreadMcMaintParams{	//MC Maintanence parameters. For MC dumping an
 };
 
 /* Function prototypes */
-int GetBootDeviceID(const char *path);
+int GetBootDeviceID(void);
 int GetConsoleRegion(void);
 int GetConsoleVMode(void);
 int CleanupTarget(int port, int slot);
@@ -104,11 +104,9 @@ int GetPs2Type(void);
 int HasOldFMCBConfigFileOnHDD(void);
 int HasOldFMCBConfigFile(int port, int slot);
 int HasOldMultiInstall(int port, int slot);
-int CreateCrossLinkedFiles(int port, int slot);
 int CleanupMultiInstallation(int port, int slot);
 int PerformMemoryCardDump(int port, int slot);
 int PerformMemoryCardRestore(int port, int slot);
-int GenerateUninstallFile(int port, int slot);
 
 int CheckPrerequisites(const struct McData *McData, unsigned char OperationMode);
 int GetNumMemcardsInserted(struct McData *McData);
@@ -132,4 +130,7 @@ int HDDCheckSMARTStatus(void);
 int HDDCheckSectorErrorStatus(void);
 int HDDCheckPartErrorStatus(void);
 int HDDCheckHasSpace(unsigned int PartSize);
+int HDDCheckStatus(void);
+
+void poweroffCallback(void *arg);
 

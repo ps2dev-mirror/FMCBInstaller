@@ -62,8 +62,10 @@ static const char *DefaultLanguageStringTable[SYS_UI_MSG_COUNT]={
 	"The HardDisk Drive (HDD) unit has a problem.\nPlease run a disk check first.",
 	"S.M.A.R.T. has reported that the HardDisk Drive (HDD) unit has failed.\n\nThe HDD unit must be replaced.",
 	"This console does not support FMCB.\n\nHowever, you can still make installations with it.",
-	"While the multi-installation allows you to create a FMCB card that can boot on all PlayStation 2 consoles with the least space requirements, it goes against the design of the Memory Card by introducing controlled filesystem corruption.\n\nIt is hence strongly recommended to create a normal installation instead.",
+	"While the multi-installation can boot on all PlayStation 2 consoles with the least space requirements, it goes against the design of the Memory Card by introducing controlled filesystem corruption.\n\nIt is hence strongly recommended to create a normal installation instead.",
 	"Quit program?",
+	"The HardDisk Drive (HDD) unit is not formatted. Format?\nWarning: All data will be erased.",
+	"Failed to format the HardDisk Drive (HDD) unit.",
 };
 
 static const char *DefaultLanguageLabelStringTable[SYS_UI_LBL_COUNT]={
@@ -71,6 +73,12 @@ static const char *DefaultLanguageLabelStringTable[SYS_UI_LBL_COUNT]={
 	"Cancel",
 	"Yes",
 	"No",
+	"Next",
+	"Back",
+	"Enabled",
+	"Disabled",
+	"Toggle option",
+	"Select field",
 	"Warning",
 	"Error",
 	"Information",

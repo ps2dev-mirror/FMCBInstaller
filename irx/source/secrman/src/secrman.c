@@ -14,7 +14,7 @@
 #include "keyman.h"
 
 #define MODNAME "secrman_special"
-IRX_ID(MODNAME, 0x01, 0x04);
+IRX_ID(MODNAME, 1, 4);
 
 #ifdef DEX_SUPPORT
 int IsDEX;
@@ -603,9 +603,9 @@ int SecrAuthCard(int port, int slot, int cnum){
 			On a CEX, it appears that card authentication still works without this step, but I don't know whether there are any side-effects.	*/
 				if(
 #ifdef DEX_SUPPORT
-					IsDEX ||
+				IsDEX ||
 #endif
-					card_auth_key_change(port, slot, 1)){
+				card_auth_key_change(port, slot, 1)){
 					_printf("card auth key change\n");
 
 					if(card_auth(port, slot, 0xF0, 0x00)){
@@ -920,7 +920,7 @@ static int Read_BIT(SecrBitTable_t *BitTable){
  			}
  			else {
 				result=func_00001b00(BitTable, DataToCopy);
-				DataToCopy=0;		 	 
+				DataToCopy=0;
  			}
 
 			if(result==0){
@@ -959,7 +959,7 @@ int SecrDownloadHeader(int port, int slot, void *buffer, SecrBitTable_t *BitTabl
 		result=0;
 	}
 
-	return result;	
+	return result;
 }
 
 //0x00002aa4

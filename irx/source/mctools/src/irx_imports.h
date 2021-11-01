@@ -11,11 +11,16 @@
 #include <irx.h>
 
 /* Please keep these in alphabetical order!  */
-#include <cdvdman.h>
-#include <ioman.h>
+#include <intrman.h>
 #include <loadcore.h>
-#include <modload.h>
+#include "mcman.h"
+#include <sifcmd.h>
+#include <sifman.h>
 #include <stdio.h>
 #include <sysclib.h>
+#include <sysmem.h>
+#include <thbase.h>
+#include <thevent.h>
+#include <types.h>
 
 #endif /* IOP_IRX_IMPORTS_H */

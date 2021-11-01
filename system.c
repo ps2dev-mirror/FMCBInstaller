@@ -4,6 +4,7 @@
 #include <libcdvd.h>
 #include <libmc.h>
 #include <libpad.h>
+#include <libpwroff.h>
 #include <libsecr-common.h>
 #include <hdd-ioctl.h>
 #include <loadfile.h>
@@ -13,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <timer.h>
+#include <usbhdfsd-common.h>
 #include <limits.h>
 
 #include <sys/stat.h>
@@ -21,6 +23,7 @@
 #include <libgs.h>
 
 #include "main.h"
+#include "iop.h"
 #include "pad.h"
 #include "libsecr.h"
 #include "mctools_rpc.h"
@@ -35,12 +38,52 @@
 extern void *_gp;
 extern int errno __attribute__((section("data")));
 extern unsigned short int SelectButton, CancelButton;
+extern u8 dev9Loaded;
+extern int InstallLockSema;
 
-int GetBootDeviceID(const char *path){
+static int InitMCInfo(int port, int slot);
+static int SignKELF(void *buffer, int size, unsigned char port, unsigned char slot);
+static void GetKbitAndKc(void *buffer, u8 *Kbit, u8 *Kc);
+static int SetKbitAndKc(void *buffer, u8 *Kbit, u8 *Kc);
+static int TwinSignKELF(const char *RootFolder, void *buffer, int size, unsigned char port, unsigned char slot);
+static char GetMGFolderLetter(unsigned char region);
+static const char *GetMountParams(const char *command, char *BlockDevice);
+static int DeleteFolder(const char *folder);
+static int DeleteFolderIfEmpty(const char *folder);
+static int AddDirContentsToFileCopyList(const char *RootFolderPath, const char *srcRelativePath, const char *destination, unsigned int CurrentLevel, struct FileCopyTarget **FileCopyList, unsigned int *CurrentNumFiles, unsigned int *CurrentNumDirs, unsigned int *TotalRequiredSpaceForFiles);
+static int GetMcFreeSpace(int port, int slot);
+static int EnableHDDBooting(void);
+static int CopyFilesToHDD(const char *RootFolder, const struct FileCopyTarget *FileCopyList, unsigned int NumFilesEntries, unsigned int TotalNumBytes, unsigned int flags);
+static int CreateBasicFoldersOnHDD(unsigned int flags);
+static int _CleanupHDDTarget(void);
+static int GetAllBaseFileStats(char MGLetter, const char *RootFolder, struct FileCopyTarget *FileCopyList, unsigned int NumFiles, unsigned int *TotalRequiredSpaceForFiles);
+static int SyncMCFileWrite(int fd, int size, void *Buffer);
+static int CopyFiles(const char *RootFolder, unsigned char port, unsigned char slot, const struct FileCopyTarget *FileCopyList, unsigned int NumFilesEntries, unsigned int TotalNumBytes, unsigned int flags);
+static int CreateCrossLinkedFiles(int port, int slot);
+static int GenerateUninstallFile(int port, int slot);
+static void SetWorkerThreadCommand(int command, const void *arg);
+static int GetWorkerThreadCommand(const void **arg);
+static int DumpMemoryCard(int port, int slot, FILE *file, unsigned short int PagesPerCluster, const struct MCTools_McSpecData *McSpecData);
+static int RestoreMemoryCard(int port, int slot, FILE *file, const struct MCTools_McSpecData *McSpecData);
+static void WorkerThread(void *arg);
+static int LoadOSDFile(const char *path, void **pBuffer, int *pSize, int *pRSize);
+
+int GetBootDeviceID(void)
+{
+	static int BootDevice = -2;
+	char path[256];
 	int result;
 
-	if(!strncmp(path, "mass:", 5) || !strncmp(path, "mass0:", 6)) result=BOOT_DEVICE_MASS;
-	else result=BOOT_DEVICE_UNKNOWN;
+	if(BootDevice < BOOT_DEVICE_UNKNOWN)
+	{
+		getcwd(path, sizeof(path));
+
+		if(!strncmp(path, "mass:", 5) || !strncmp(path, "mass0:", 6)) result=BOOT_DEVICE_MASS;
+		else result=BOOT_DEVICE_UNKNOWN;
+
+		BootDevice = result;
+	} else
+		result = BootDevice;
 
 	return result;
 }
@@ -61,7 +104,7 @@ int GetConsoleRegion(void)
 					region = CONSOLE_REGION_JAPAN;
 					break;
 				case 'A':
-				case 'H':
+				case 'H':	//Asia, but it uses the same folder as USA.
 					region = CONSOLE_REGION_USA;
 					break;
 				case 'E':
@@ -85,7 +128,7 @@ int GetConsoleVMode(void)
 	{
 		case CONSOLE_REGION_EUROPE:
 			return 1;
-		default:
+		default:	//All other regions use NTSC
 			return 0;
 	}
 }
@@ -143,8 +186,13 @@ static struct InstallationFile DEXSysFiles[DEX_SYS_INSTALL_NUM_FILES]={
 	}
 };
 
-#define PS2_SYS_HDDLOAD_INSTALL_NUM_FILES	2
+#define PS2_SYS_HDDLOAD_INSTALL_NUM_FILES	3
 static struct InstallationFile PS2HDDLOADSysFiles[PS2_SYS_HDDLOAD_INSTALL_NUM_FILES]={
+	{
+		"SYSTEM/DEV9.IRX",
+		"BIEXEC-SYSTEM/dev9.irx",
+		0
+	},
 	{
 		"SYSTEM/ATAD.IRX",
 		"BIEXEC-SYSTEM/atad.irx",
@@ -258,8 +306,8 @@ static struct InstallationFile HDDBaseFiles[HDD_BASE_INSTALL_NUM_FILES]={
 		0
 	},
 	{
-		"SYSTEM/FSCK/LANG/NotoSansCJKjp-Bold.otf",
-		"hdd0:__system:pfs:/fsck/lang/NotoSansCJKjp-Bold.otf",
+		"SYSTEM/FSCK/LANG/NotoSansJP-Bold.otf",
+		"hdd0:__system:pfs:/fsck/lang/NotoSansJP-Bold.otf",
 		0
 	},
 	{
@@ -402,11 +450,35 @@ static char PSXSysExecFolder[]="BIEXEC-SYSTEM";
 static char SysExecFile[12];	/* E.g. "osdmain.elf" or "osd110.elf" */
 static char romver[16];
 
-static int GetMcFreeSpace(int port, int slot);
-static int CopyFiles(const char *RootFolder, unsigned char port, unsigned char slot, const struct FileCopyTarget *FileCopyList, unsigned int NumFilesEntries, unsigned int TotalNumBytes, unsigned int flags);
+static int InitMCInfo(int port, int slot)
+{
+	int result;
+	int type, space, format;
+
+	mcGetInfo(port, slot, &type, &space, &format);
+	mcSync(0, NULL, &result);
+
+	if(result >= sceMcResChangedCard && type==sceMcTypePS2)
+	{
+		result = 0;
+	} else
+		result = -ENODEV;
+
+	return result;
+}
 
 static int SignKELF(void *buffer, int size, unsigned char port, unsigned char slot){
-	int result;
+	int result, InitSemaID, mcInitRes;
+
+	/*	An IOP reboot would be done by the Utility Disc,
+		to allow the SecrDownloadFile function of secrman_special to work on a DEX,
+		even though secrman_special was meant for a CEX.
+
+		A DEX was designed so that card authentication will not work right when a CEX SECRMAN module is used.
+		This works since the memory card was authenticated by the ROM's SECRMAN module and SecrDownloadFile does not involve card authentication.
+
+		However, to speed things up and to prevent more things from going wrong (particularly with USB support), we just reboot the IOP once at initialization and load all modules there.
+		Our SECRMAN module is a custom version that has a check to support the DEX natively.	*/
 
 	result=1;
 	if(SecrDownloadFile(2+port, slot, buffer)==NULL){
@@ -611,6 +683,26 @@ static const char *GetMountParams(const char *command, char *BlockDevice){
 	return MountPath;
 }
 
+static int createFolder(int port, int slot, const char *path){
+	int result;
+	sceMcTblGetDir table;
+
+	if((result=mcMkDir(port, slot, path))==0){
+		mcSync(0, NULL, &result);
+		if(result==-4) result=0;	//EEXIST doesn't count as an error.
+	}
+
+	if(result == 0){
+		// Set desired file attributes.
+		table.AttrFile = sceMcFileAttrReadable|sceMcFileAttrWriteable|sceMcFileAttrExecutable|sceMcFileAttrDupProhibit|sceMcFileAttrSubdir|sceMcFile0400;
+		if((result=mcSetFileInfo(port, slot, path, &table, sceMcFileInfoAttr))==0){
+			mcSync(0, NULL, &result);
+		}
+	}
+
+	return result;
+}
+
 static int CreateBasicFolders(int port, int slot, unsigned int flags){
 	unsigned int i;
 	int result;
@@ -630,36 +722,21 @@ static int CreateBasicFolders(int port, int slot, unsigned int flags){
 
 	if(result>=0){
 		if(!(flags&INSTALL_MODE_FLAG_MULTI_INST) && !(flags&INSTALL_MODE_FLAG_CROSS_REG)){
-			if((result=mcMkDir(port, slot, (flags & INSTALL_MODE_FLAG_CROSS_PSX) ? PSXSysExecFolder : SysExecFolder))==0){
-				mcSync(0, NULL, &result);
-				if(result==-4) result=0;	//EEXIST doesn't count as an error.
-			}
+			result=createFolder(port, slot, (flags & INSTALL_MODE_FLAG_CROSS_PSX) ? PSXSysExecFolder : SysExecFolder);
 		}
 		else{
-			if((result=mcMkDir(port, slot, "BIEXEC-SYSTEM"))==0){
-				mcSync(0, NULL, &result);
-				if(result==-4) result=0;	//EEXIST doesn't count as an error.
+			result=createFolder(port, slot, "BIEXEC-SYSTEM");
+
+			if(result>=0){
+				result=createFolder(port, slot, "BEEXEC-SYSTEM");
 			}
 
 			if(result>=0){
-				if((result=mcMkDir(port, slot, "BEEXEC-SYSTEM"))==0){
-					mcSync(0, NULL, &result);
-					if(result==-4) result=0;	//EEXIST doesn't count as an error.
-				}
+				result=createFolder(port, slot, "BAEXEC-SYSTEM");
 			}
 
 			if(result>=0){
-				if((result=mcMkDir(port, slot, "BAEXEC-SYSTEM"))==0){
-					mcSync(0, NULL, &result);
-					if(result==-4) result=0;	//EEXIST doesn't count as an error.
-				}
-			}
-
-			if(result>=0){
-				if((result=mcMkDir(port, slot, "BCEXEC-SYSTEM"))==0){
-					mcSync(0, NULL, &result);
-					if(result==-4) result=0;	//EEXIST doesn't count as an error.
-				}
+				result=createFolder(port, slot, "BCEXEC-SYSTEM");
 			}
 		}
 	}
@@ -1169,7 +1246,7 @@ static int CreateBasicFoldersOnHDD(unsigned int flags){
 	return result;
 }
 
-int CleanupHDDTarget(void){
+static int _CleanupHDDTarget(void){
 	int result;
 
 	/* Basically, do the opposite of CreateBasicFoldersOnHDD(). */
@@ -1192,6 +1269,18 @@ int CleanupHDDTarget(void){
 			fileXioUmount("pfs0:");
 		}
 	}
+
+	return result;
+}
+
+int CleanupHDDTarget(void){
+	int result;
+
+	WaitSema(InstallLockSema);
+
+	result = _CleanupHDDTarget();
+
+	SignalSema(InstallLockSema);
 
 	return result;
 }
@@ -1255,6 +1344,8 @@ int PerformHDDInstallation(unsigned int flags){
 	if(flags&INSTALL_MODE_FLAG_SKIP_CNF){
 		NumFiles--;
 	}
+
+	WaitSema(InstallLockSema);
 
 	file=0;
 	if((FileCopyList=malloc(NumFiles*sizeof(struct FileCopyTarget)))!=NULL){
@@ -1363,7 +1454,7 @@ int PerformHDDInstallation(unsigned int flags){
 		}
 
 		if(result>=0 && !(flags & INSTALL_MODE_FLAG_SKIP_CLEANUP)){
-			if((result=CleanupHDDTarget())<0){
+			if((result=_CleanupHDDTarget())<0){
 				DisplayErrorMessage(SYS_UI_MSG_CLEANUP_FAILED);
 			}
 		}
@@ -1393,6 +1484,8 @@ int PerformHDDInstallation(unsigned int flags){
 	}
 	else result=-ENOMEM;
 
+	SignalSema(InstallLockSema);
+
 	return result;
 }
 
@@ -1402,12 +1495,6 @@ int PerformInstallation(unsigned char port, unsigned char slot, unsigned int fla
 	int result;
 	char RootFolder[256], MGLetter;
 	unsigned char TargetSystemType;
-
-	if(flags&INSTALL_MODE_FLAG_MULTI_INST){
-		if((result=MCToolsInitPageCache(port, slot))<0){
-			return -EEXTCACHEINITERR;
-		}
-	}
 
 	if(!(flags&INSTALL_MODE_FLAG_CROSS_PSX))
 	{
@@ -1420,6 +1507,8 @@ int PerformInstallation(unsigned char port, unsigned char slot, unsigned int fla
 
 	getcwd(RootFolder, sizeof(RootFolder) - 8);
 	strcat(RootFolder, "INSTALL");
+
+	WaitSema(InstallLockSema);
 
 	//Generate the file copy list.
 	NumFiles=BASE_INSTALL_NUM_FILES+SYS_FOLDER_RESOURCES_NUM_FILES;
@@ -1745,11 +1834,11 @@ int PerformInstallation(unsigned char port, unsigned char slot, unsigned int fla
 
 				if(result<0) result=-EEXTCRSLNKFAIL;
 			}
-
-			if(result>=0) result=MCToolsFlushPageCache();	//This must be strictly done immediately after crosslinking operation.
 		}
 	}
 	else result=-ENOMEM;
+
+	SignalSema(InstallLockSema);
 
 	return result;
 }
@@ -2056,15 +2145,30 @@ int CleanupMultiInstallation(int port, int slot){
 	char path[27], *FullPath;
 	int result, FMCBUninstallFileVersion, NumCrosslinkedFiles;
 	FILE *file;
+	int InitSemaID;
+
+	//Reboot the IOP to load MCTOOLS.IRX in. This will also prevent MCMAN's cache from storing outdated content.
+	InitSemaID = IopInitStart(IOP_MOD_MCTOOLS|IOP_REBOOT);
+
+	sprintf(path, "mc%u:SYS-CONF/FMCBUINST.dat", port);
+	memset(&FileHeader, 0, sizeof(struct UninstallationDataFileHeader));
+
+	WaitSema(InitSemaID);
+	DeleteSema(InitSemaID);
+
+	ReinitializeUI();
+
+	//Call sceMcGetInfo on the memory card to be accessed, after IOP reboots. Otherwise I/O operations may fail.
+	if((result = InitMCInfo(port, slot)) != 0)
+		return result;
 
 	if((result=MCToolsInitPageCache(port, slot))<0){
 		return EEXTCACHEINITERR;
 	}
 
 	result=0;
-	sprintf(path, "mc%u:SYS-CONF/FMCBUINST.dat", port);
 
-	memset(&FileHeader, 0, sizeof(struct UninstallationDataFileHeader));
+	WaitSema(InstallLockSema);
 
 	if((file = fopen(path, "rb")) == NULL)
 	{
@@ -2208,14 +2312,25 @@ int CleanupMultiInstallation(int port, int slot){
 		if(LocalMcFileAlias!=NULL) free(LocalMcFileAlias);
 	}
 
+	SignalSema(InstallLockSema);
+
+	//Reboot the IOP to allow the remainder of the program to continue.
+	InitSemaID = IopInitStart(IOP_MOD_SET_MAIN|IOP_REBOOT);
+	WaitSema(InitSemaID);
+	DeleteSema(InitSemaID);
+
+	ReinitializeUI();
+
 	return result;
 }
 
-
-int CreateCrossLinkedFiles(int port, int slot){
+static int CreateCrossLinkedFiles(int port, int slot){
 	char path[27];
-	int result, NumFiles;
+	int result, NumFiles, InitSemaID;
 	unsigned int FileIndex;
+
+	//Reboot the IOP to load MCTOOLS.IRX in. This will also prevent MCMAN's cache from storing outdated content.
+	InitSemaID = IopInitStart(IOP_MOD_MCTOOLS|IOP_REBOOT);
 
 	sprintf(path, "%s/%s", SysExecFolder, SysExecFile);
 
@@ -2225,6 +2340,19 @@ int CreateCrossLinkedFiles(int port, int slot){
 		if(strcmp(FileAlias[FileIndex+NumFiles].name, path)==0){
 			break;
 		}
+	}
+
+	WaitSema(InitSemaID);
+	DeleteSema(InitSemaID);
+
+	ReinitializeUI();
+
+	//Call sceMcGetInfo on the memory card to be accessed, after IOP reboots. Otherwise I/O operations may fail.
+	if((result = InitMCInfo(port, slot)) != 0)
+		return result;
+
+	if((result=MCToolsInitPageCache(port, slot))<0){
+		return -EEXTCACHEINITERR;
 	}
 
 	for(; NumFiles>0; FileIndex+=result,NumFiles-=result){
@@ -2243,10 +2371,20 @@ int CreateCrossLinkedFiles(int port, int slot){
 		}
 	}
 
+	if(result>=0)
+		result=MCToolsFlushPageCache();	//This must be strictly done immediately after crosslinking operation.
+
+	//Reboot the IOP to allow the remainder of the program to continue.
+	InitSemaID = IopInitStart(IOP_MOD_SET_MAIN|IOP_REBOOT);
+	WaitSema(InitSemaID);
+	DeleteSema(InitSemaID);
+
+	ReinitializeUI();
+
 	return result;
 }
 
-int GenerateUninstallFile(int port, int slot){
+static int GenerateUninstallFile(int port, int slot){
 	unsigned char i, TotalNumEnts;
 	int result;
 	FILE *file;
@@ -2368,17 +2506,30 @@ int PerformMemoryCardDump(int port, int slot)
 	char filename[]="mc0.bin";
 	u32 CurrentCPUTicks, PreviousCPUTicks, PadStatus;
 	unsigned char seconds, ClusterSize;
-	int result, WorkerThreadState;
+	int result, WorkerThreadState, InitSemaID;
 	FILE *file;
 	unsigned int ClusterSizeBytes, TimeElasped, rate, TotalSizeToTransferKB;
 	float PercentageComplete;
 	struct MCTools_McSpecData McSpecData;
+
+	//Reboot the IOP to load MCTOOLS.IRX in. This will also prevent MCMAN's cache from storing outdated content.
+	InitSemaID = IopInitStart(IOP_MOD_MCTOOLS|IOP_REBOOT);
+	WaitSema(InitSemaID);
+	DeleteSema(InitSemaID);
+
+	ReinitializeUI();
+
+	//Call sceMcGetInfo on the memory card to be accessed, after IOP reboots. Otherwise I/O operations may fail.
+	if((result = InitMCInfo(port, slot)) != 0)
+		return result;
 
 	if((result=MCToolsGetMCInfo(port, slot, &McSpecData))<0)
 	{
 		DEBUG_PRINTF("MCToolsGetMCInfo() failed with error %d\n", result);
 		return result;
 	}
+
+	WaitSema(InstallLockSema);
 
 	MCToolsFlushMCMANClusterCache(port, slot);
 
@@ -2391,6 +2542,10 @@ int PerformMemoryCardDump(int port, int slot)
 		DEBUG_PRINTF("Error creating file %s\n", filename);
 		result = -errno;
 	} else {
+		InitProgressScreen(SYS_UI_LBL_DUMPING_MC);
+		//Draw the progress screen once, so that loading the font will not compete with the actual dumping operation.
+		DrawMemoryCardDumpingProgressScreen(0, 0, 0);
+
 		TimeElasped=0;
 		PreviousCPUTicks=cpu_ticks();
 		TotalSizeToTransferKB=McSpecData.CardSize*McSpecData.PageSize/1024;
@@ -2401,8 +2556,6 @@ int PerformMemoryCardDump(int port, int slot)
 		WorkerThreadParam.ClusterSize=ClusterSize;
 		WorkerThreadParam.McSpecData=&McSpecData;
 		SendWorkerThreadCommand(WORKER_THREAD_CMD_DUMP_MC, &WorkerThreadParam);
-
-		InitProgressScreen(SYS_UI_LBL_DUMPING_MC);
 
 		do{
 			WorkerThreadState=GetWorkerThreadState();
@@ -2425,13 +2578,22 @@ int PerformMemoryCardDump(int port, int slot)
 			}
 
 			rate=(TimeElasped>0)?PercentageComplete*TotalSizeToTransferKB/TimeElasped:0;
-			DrawMemoryCardDumpingProgressScreen(PercentageComplete,  rate, rate>0?((1.0f-PercentageComplete)*TotalSizeToTransferKB)/rate:UINT_MAX);
+			DrawMemoryCardDumpingProgressScreen(PercentageComplete, rate, rate>0?((1.0f-PercentageComplete)*TotalSizeToTransferKB)/rate:UINT_MAX);
 		}while(WorkerThreadState==WORKER_THREAD_RES_CMD_OK || WorkerThreadState==WORKER_THREAD_RES_BSY);
 
 		result=(WorkerThreadState==WORKER_THREAD_RES_OK)?0:WorkerThreadState;
 
 		fclose(file);
 	}
+
+	SignalSema(InstallLockSema);
+
+	//Reboot the IOP to allow the remainder of the program to continue.
+	InitSemaID = IopInitStart(IOP_MOD_SET_MAIN|IOP_REBOOT);
+	WaitSema(InitSemaID);
+	DeleteSema(InitSemaID);
+
+	ReinitializeUI();
 
 	return result;
 }
@@ -2447,8 +2609,19 @@ int PerformMemoryCardRestore(int port, int slot)
 	u32 CurrentCPUTicks, PreviousCPUTicks, PadStatus;
 	float PercentageComplete;
 	struct MCTools_McSpecData McSpecData;
+	int InitSemaID;
 
 	result=0;
+	//Reboot the IOP to load MCTOOLS.IRX in. This will also prevent MCMAN's cache from storing outdated content.
+	InitSemaID = IopInitStart(IOP_MOD_MCTOOLS|IOP_REBOOT);
+	WaitSema(InitSemaID);
+	DeleteSema(InitSemaID);
+
+	ReinitializeUI();
+
+	//Call sceMcGetInfo on the memory card to be accessed, after IOP reboots. Otherwise I/O operations may fail.
+	if((result = InitMCInfo(port, slot)) != 0)
+		return result;
 
 	if((result=MCToolsGetMCInfo(port, slot, &McSpecData))<0){
 		DEBUG_PRINTF("MCToolsGetMCInfo() failed with error %d\n", result);
@@ -2457,12 +2630,18 @@ int PerformMemoryCardRestore(int port, int slot)
 
 	MCToolsFlushMCMANClusterCache(port, slot);
 
+	WaitSema(InstallLockSema);
+
 	filename[2] = '0' + port;
 	if((file = fopen(filename, "rb")) == NULL)
 	{
 		DEBUG_PRINTF("Error opening file %s\n", filename);
 		result = -errno;
 	} else {
+		InitProgressScreen(SYS_UI_LBL_RESTORING_MC);
+		//Draw the progress screen once, so that loading the font will not compete with the actual restore operation.
+		DrawMemoryCardRestoreProgressScreen(0,  0, 0);
+
 		TimeElasped=0;
 		PreviousCPUTicks=cpu_ticks();
 		TotalSizeToTransferKB=McSpecData.CardSize*McSpecData.PageSize/1024;
@@ -2472,8 +2651,6 @@ int PerformMemoryCardRestore(int port, int slot)
 		WorkerThreadParam.file=file;
 		WorkerThreadParam.McSpecData=&McSpecData;
 		SendWorkerThreadCommand(WORKER_THREAD_CMD_RESTORE_MC, &WorkerThreadParam);
-
-		InitProgressScreen(SYS_UI_LBL_RESTORING_MC);
 
 		do{
 			WorkerThreadState=GetWorkerThreadState();
@@ -2503,6 +2680,15 @@ int PerformMemoryCardRestore(int port, int slot)
 
 		fclose(file);
 	}
+
+	SignalSema(InstallLockSema);
+
+	//Reboot the IOP to allow the remainder of the program to continue.
+	InitSemaID = IopInitStart(IOP_MOD_SET_MAIN|IOP_REBOOT);
+	WaitSema(InitSemaID);
+	DeleteSema(InitSemaID);
+
+	ReinitializeUI();
 
 	return result;
 }
@@ -2996,3 +3182,35 @@ int HDDCheckHasSpace(unsigned int PartSize)	//Partition size in MBytes
 
 	return result;
 }
+
+int HDDCheckStatus(void)
+{
+	int status;
+
+	status = fileXioDevctl("hdd0:", HDIOC_STATUS, NULL, 0, NULL, 0);
+
+	if(status == 0)
+		fileXioRemove("hdd0:_tmp");	//Remove _tmp, if it exists.
+
+	return status;
+}
+
+void poweroffCallback(void *arg)
+{	//Power button was pressed. If no installation is in progress, begin shutdown of the PS2.
+	if (PollSema(InstallLockSema) == InstallLockSema)
+	{
+		//If dev9.irx was loaded successfully, shut down DEV9.
+		if(dev9Loaded)
+		{
+			fileXioDevctl("pfs:", PDIOC_CLOSEALL, NULL, 0, NULL, 0);
+			while(fileXioDevctl("dev9x:", DDIOC_OFF, NULL, 0, NULL, 0) < 0){};
+		}
+
+		// As required by some (typically 2.5") HDDs, issue the SCSI STOP UNIT command to avoid causing an emergency park.
+		fileXioDevctl("mass:", USBMASS_DEVCTL_STOP_ALL, NULL, 0, NULL, 0);
+
+		/* Power-off the PlayStation 2 console. */
+		poweroffShutdown();
+	}
+}
+

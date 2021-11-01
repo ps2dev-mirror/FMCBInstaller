@@ -2,13 +2,13 @@
 
 #define UI_OFFSET_X	8
 #define UI_OFFSET_Y	8
-#define UI_LINE_MAX	38		//Maximum line length for messages.
 #define UI_FONT_WIDTH	FNT_CHAR_WIDTH
 #define UI_FONT_HEIGHT	FNT_CHAR_HEIGHT
 #define UI_TAB_STOPS	FNT_TAB_STOPS
 
-//#define UI_FONT_MEM		1	//Uncomment to initialize FreeType and store the font in memory (useful when the IOP must be reset during runtime).
-//#define UI_EN_MITEM_TOGGLE	1	//Uncomment to make the toggle control available (Enable/disable strings must be available).
+//In VSYNC ticks
+#define UI_PAD_REPEAT_START_DELAY	20
+#define UI_PAD_REPEAT_DELAY		5
 
 enum MENU_ITEM{
 	MITEM_SEPERATOR,
@@ -26,6 +26,7 @@ enum MENU_ITEM{
 	MITEM_VALUE,
 	MITEM_BUTTON,
 	MITEM_TOGGLE,
+	MITEM_ENUM,
 
 	MITEM_TERMINATOR,
 
@@ -47,7 +48,7 @@ enum MENU_ITEM_FORMAT{
 #define MITEM_FLAG_DISABLED		0x04
 #define MITEM_FLAG_UNIT_PREFIX		0x08	//For formats with a unit prefix, show it.
 #define MITEM_FLAG_POS_ABS		0x10	//Coordinates are absolute.
-#define MITEM_FLAG_POS_MID		0x20	//Aligned to the middle. Only for labels.
+#define MITEM_FLAG_POS_MID		0x20	//Aligned to the middle. Only for buttons.
 
 struct UIMenuItem{
 	unsigned char type;
@@ -66,6 +67,15 @@ struct UIMenuItem{
 			const char *buffer;
 			int maxlen;
 		}string;
+		struct{
+			const int *labels;
+			int count;
+			int selectedIndex;
+		}enumeration;
+		struct{
+			int id;
+			int TextWidth;
+		}label;
 	};
 };
 
@@ -89,25 +99,31 @@ enum UI_MENU_TRANSITION{
 	UIMT_FADE_OUT,
 };
 
-const char *GetUIString(unsigned int StringID);
-const char *GetUILabel(unsigned int LabelID);
-int InitializeUI(void);
+const char *GetUIString(unsigned int id);
+const char *GetUILabel(unsigned int id);
+int InitializeUI(int BufferFont);
+int ReinitializeUI(void);
 void DeinitializeUI(void);
 int ShowMessageBox(int Option1Label, int Option2Label, int Option3Label, int Option4Label, const char *message, int title);
 void DisplayWarningMessage(unsigned int message);
 void DisplayErrorMessage(unsigned int message);
 void DisplayInfoMessage(unsigned int message);
 int DisplayPromptMessage(unsigned int message, unsigned char Button1Label, unsigned char Button2Label);
+void DisplayFlashStatusUpdate(unsigned int message);
 
 struct UIMenuItem *UIGetItem(struct UIMenu *menu, unsigned char id);
 void UISetVisible(struct UIMenu *menu, unsigned char id, int visible);
 void UISetReadonly(struct UIMenu *menu, unsigned char id, int readonly);
 void UISetEnabled(struct UIMenu *menu, unsigned char id, int enabled);
 void UISetValue(struct UIMenu *menu, unsigned char id, int value);
+int UIGetValue(struct UIMenu *menu, unsigned char id);
 void UISetLabel(struct UIMenu *menu, unsigned char id, int label);
 void UISetString(struct UIMenu *menu, unsigned char id, const char *string);
 void UISetType(struct UIMenu *menu, unsigned char id, unsigned char type);
 void UISetFormat(struct UIMenu *menu, unsigned char id, unsigned char format, unsigned char width);
+void UISetEnum(struct UIMenu *menu, unsigned char id, const int *labels, int count);
+void UISetEnumSelectedIndex(struct UIMenu *menu, unsigned char id, int selectedIndex);
+int UIGetEnumSelectedIndex(struct UIMenu *menu, unsigned char id);
 void UIDrawMenu(struct UIMenu *menu, unsigned short int frame, short int StartX, short int StartY, short int selection);
 void UITransition(struct UIMenu *menu, int type, int SelectedOption);
-int UIExecMenu(struct UIMenu *FirstMenu, short int SelectedItem, struct UIMenu **CurrentMenu, int (*callback)(struct UIMenu *menu, unsigned short int frame, int selection, int padstatus));
+int UIExecMenu(struct UIMenu *FirstMenu, short int SelectedItem, struct UIMenu **CurrentMenu, int (*callback)(struct UIMenu *menu, unsigned short int frame, int selection, u32 padstatus));

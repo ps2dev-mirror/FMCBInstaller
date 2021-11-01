@@ -1,4 +1,5 @@
 #include <kernel.h>
+#include <libhdd.h>
 #include <libmc.h>
 #include <libpad.h>
 #include <malloc.h>
@@ -8,6 +9,7 @@
 #include <osd_config.h>
 #include <timer.h>
 #include <limits.h>
+#include <wchar.h>
 
 #include <libgs.h>
 
@@ -220,9 +222,37 @@ static void DrawMenuExitAnimation(void)
 	}
 }
 
-static int MainMenuUpdateCallback(struct UIMenu *menu, unsigned short int frame, int selection, int padstatus)
+static int CheckFormat(void)
 {
-	if(padstatus != 0)
+	int status;
+
+	status = HDDCheckStatus();
+	switch(status)
+	{
+		case 1:		//Not formatted
+			if(DisplayPromptMessage(SYS_UI_MSG_FORMAT_HDD, SYS_UI_LBL_CANCEL, SYS_UI_LBL_OK) == 2)
+			{
+				status = 0;
+
+				if(hddFormat() != 0)
+					DisplayErrorMessage(SYS_UI_MSG_FORMAT_HDD_FAILED);
+			}
+			break;
+		case 0:		//Formatted
+			break;
+		case 2:		//Not a usable HDD
+		case 3:		//No HDD connected
+		default:	//Unknown errors
+			//DisplayErrorMessage(SYS_UI_MSG_NO_HDD);
+			break;
+	}
+
+	return status;
+}
+
+static int MainMenuUpdateCallback(struct UIMenu *menu, unsigned short int frame, int selection, u32 padstatus)
+{
+	if((padstatus != 0) || (frame == 0))
 	{
 		if(selection >= 0)
 		{
@@ -389,8 +419,12 @@ void MainMenu(void)
 
 				if(HasOldFMCBConfigFile(McPort, 0))
 				{
-					if(DisplayPromptMessage(SYS_UI_MSG_CNF_FOUND, SYS_UI_LBL_YES, SYS_UI_LBL_NO) <= 1)
+					result = DisplayPromptMessage(SYS_UI_MSG_CNF_FOUND, SYS_UI_LBL_YES, SYS_UI_LBL_NO);
+
+					if(result == 1)		//"YES" selected.
 						flags|=INSTALL_MODE_FLAG_SKIP_CNF;
+					else if (result == 0)	//User pressed back.
+						break;
 				}
 
 				if(event==EVENT_MULTI_INSTALL)
@@ -605,6 +639,9 @@ void MainMenu(void)
 					break;
 				}
 
+				if(CheckFormat())
+					break;
+
 				if(HDDCheckSectorErrorStatus() || HDDCheckPartErrorStatus())
 				{
 					DisplayErrorMessage(SYS_UI_MSG_HDD_CORRUPTED);
@@ -617,8 +654,12 @@ void MainMenu(void)
 
 				if(HasOldFMCBConfigFileOnHDD())
 				{
-					if(DisplayPromptMessage(SYS_UI_MSG_CNF_HDD_FOUND, SYS_UI_LBL_YES, SYS_UI_LBL_NO) <= 1)
+					result = DisplayPromptMessage(SYS_UI_MSG_CNF_HDD_FOUND, SYS_UI_LBL_YES, SYS_UI_LBL_NO);
+
+					if(result == 1)		//"YES" selected.
 						flags|=INSTALL_MODE_FLAG_SKIP_CNF;
+					else if (result == 0)	//User pressed back.
+						break;
 				}
 
 				result=PerformHDDInstallation(flags);
@@ -864,6 +905,7 @@ void DisplayOutOfSpaceMessageHDD(unsigned int AvailableSpace, unsigned int Requi
 
 void RedrawLoadingScreen(unsigned int frame)
 {
+	short int xRel, x, y;
 	int NumDots;
 	GS_RGBAQ rgbaq;
 
@@ -872,19 +914,22 @@ void RedrawLoadingScreen(unsigned int frame)
 	NumDots=frame%240/60;
 
 	DrawBackground(&UIDrawGlobal, &BackgroundTexture);
-	FontPrintf(&UIDrawGlobal, 10, 10, 0, 1.5f, GS_WHITE_FONT, "FMCBInstaller v"FMCB_INSTALLER_VERSION);
+	FontPrintf(&UIDrawGlobal, 10, 10, 0, 2.5f, GS_WHITE_FONT, "FMCBInstaller v"FMCB_INSTALLER_VERSION);
 
-	FontPrintf(&UIDrawGlobal, 420, 380, 0, 1.0f, GS_WHITE_FONT, "Loading");
+	x = 420;
+	y = 380;
+	FontPrintfWithFeedback(&UIDrawGlobal, x, y, 0, 1.8f, GS_WHITE_FONT, "Loading ", &xRel, NULL);
+	x += xRel;
 	switch(NumDots)
 	{
 		case 1:
-			FontPrintf(&UIDrawGlobal, 560, 380, 0, 1.0f, GS_WHITE_FONT, ".");
+			FontPrintf(&UIDrawGlobal, x, y, 0, 1.8f, GS_WHITE_FONT, ".");
 			break;
 		case 2:
-			FontPrintf(&UIDrawGlobal, 560, 380, 0, 1.0f, GS_WHITE_FONT, "..");
+			FontPrintf(&UIDrawGlobal, x, y, 0, 1.8f, GS_WHITE_FONT, ". .");
 			break;
 		case 3:
-			FontPrintf(&UIDrawGlobal, 560, 380, 0, 1.0f, GS_WHITE_FONT, "...");
+			FontPrintf(&UIDrawGlobal, x, y, 0, 1.8f, GS_WHITE_FONT, ". . .");
 			break;
 	}
 

@@ -91,11 +91,19 @@ SECTIONS {
 	}
 	_end_bss = .;
 
+	/* Symbols needed by crt0.s.  */
+	PROVIDE(_heap_size = 0x02000000 - _end);
+	PROVIDE(_stack_size = 0x2000);
+
+	_stack = ALIGN(128);
+	PROVIDE(_stack = .);
+	. = _stack + _stack_size;
+
 	_end = . ;
 	PROVIDE(end = .);
 
-	/* Symbols needed by crt0.s.  */
-	PROVIDE(_heap_size = -1);
-	PROVIDE(_stack = -1);
-	PROVIDE(_stack_size = 128 * 1024);
+	/* Unwanted stuff */
+	/DISCARD/ : {
+		* ( .MIPS.abiflags )
+	}
 }

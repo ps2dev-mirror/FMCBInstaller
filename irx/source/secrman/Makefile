@@ -6,27 +6,17 @@
 # Licenced under Academic Free License version 2.0
 # Review ps2sdk README & LICENSE files for further details.
 #
-# $Id$
 
-IOP_OBJS_DIR = obj/
-IOP_BIN_DIR = bin/
-IOP_SRC_DIR = src/
-IOP_INC_DIR = include/
+IOP_BIN  = secrman.irx
+IOP_OBJS = secrman.o MechaAuth.o CardAuth.o keyman.o imports.o exports.o
 
-IOP_BIN  = bin/secrman.irx
-IOP_OBJS = obj/secrman.o obj/MechaAuth.o obj/CardAuth.o obj/keyman.o obj/imports.o obj/exports.o
+# Define to 1, to enable runtime support for both CEX and DEX units.
+DEX_SUPPORT ?= 1
 
-IOP_INCS += -I$(IOP_INC_DIR) -I$(PS2SDKSRC)/iop/kernel/include -I$(PS2SDKSRC)/iop/system/sio2log/include -I$(PS2SDKSRC)/common/include -I$(IOP_SRC_DIR)/include
-IOP_CFLAGS += -Wall -fno-builtin -O2 -G0 -mno-check-zero-division
-IOP_LDFLAGS += -s
+ifeq ($(DEX_SUPPORT),1)
+	IOP_CFLAGS += -DDEX_SUPPORT=1
+endif
 
-IOP_CFLAGS += -DDEX_SUPPORT=1	#Uncomment to enable unofficial support for the DEX
-
-all: $(IOP_OBJS_DIR) $(IOP_BIN_DIR) $(IOP_BIN)
-
-clean:
-	rm -f -r $(IOP_OBJS_DIR) $(IOP_BIN_DIR)
-
-include $(PS2SDKSRC)/Defs.make
-include $(PS2SDKSRC)/iop/Rules.make
-include $(PS2SDKSRC)/iop/Rules.release
+include $(PS2SDK)/Defs.make
+include ../Rules.bin.make
+include ../Rules.make

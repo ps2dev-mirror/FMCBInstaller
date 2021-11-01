@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <wchar.h>
 
 #include <libgs.h>
 
@@ -29,19 +30,22 @@ static char twh(short int val)
 }
 
 static void PNGReadMem(png_structp pngPtr, png_bytep data, png_size_t length){
-        void **PngBufferPtr=png_get_io_ptr(pngPtr);
+        u8 **PngBufferPtr=(u8**)png_get_io_ptr(pngPtr);
 
         memcpy(data, *PngBufferPtr, length);
-        (unsigned int)*PngBufferPtr+=length;
+        *PngBufferPtr += length;
 }
 
-static int LoadPNGImage(struct UIDrawGlobal *gsGlobal, GS_IMAGE *Texture, const void* buffer, unsigned int size){
-	static void **PngFileBufferPtr;
+static int LoadPNGImage(struct UIDrawGlobal *gsGlobal, GS_IMAGE *Texture, GS_IMAGE *Clut, const void* buffer, unsigned int size){
+	static u8 **PngFileBufferPtr;
 	png_structp png_ptr;
 	png_infop info_ptr;
 	png_uint_32 width, height;
 	png_bytep *row_pointers;
-	void *mem;
+	void *mem, *clut_mem;
+	png_colorp palette;
+	int num_palette;
+	png_byte color_type_new;
 
 	unsigned int sig_read = 0;
         int row, i, k=0, j, bit_depth, color_type, interlace_type;
@@ -50,7 +54,6 @@ static int LoadPNGImage(struct UIDrawGlobal *gsGlobal, GS_IMAGE *Texture, const 
 
 	if(!png_ptr)
 	{
-		//printf("PNG Read Struct Init Failed\n");
 		return -1;
 	}
 
@@ -58,14 +61,12 @@ static int LoadPNGImage(struct UIDrawGlobal *gsGlobal, GS_IMAGE *Texture, const 
 
 	if(!info_ptr)
 	{
-		//printf("PNG Info Struct Init Failed\n");
 		png_destroy_read_struct(&png_ptr, (png_infopp)NULL, (png_infopp)NULL);
 		return -1;
 	}
 
 	if(setjmp(png_jmpbuf(png_ptr)))
 	{
-		//printf("Got PNG Error!\n");
 		png_destroy_read_struct(&png_ptr, &info_ptr, (png_infopp)NULL);
 		return -1;
 	}
@@ -79,7 +80,18 @@ static int LoadPNGImage(struct UIDrawGlobal *gsGlobal, GS_IMAGE *Texture, const 
 	png_set_strip_16(png_ptr);
 
 	if (color_type == PNG_COLOR_TYPE_PALETTE)
-		png_set_expand(png_ptr);
+	{
+		if(Clut == NULL)
+			png_set_expand(png_ptr);
+		else {
+			Clut->x		= 0;
+			Clut->y		= 0;
+			Clut->width	= 16;
+			Clut->height	= 16;
+			Clut->psm	= GS_CLUT_32;
+			Clut->vram_width = ((Clut->width + 63) & ~63) / 64;
+		}
+	}
 
 	if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8)
 		png_set_expand(png_ptr);
@@ -96,11 +108,12 @@ static int LoadPNGImage(struct UIDrawGlobal *gsGlobal, GS_IMAGE *Texture, const 
 	Texture->width	= width;
 	Texture->height	= height;
 
-	if(png_get_color_type(png_ptr, info_ptr) == PNG_COLOR_TYPE_RGB_ALPHA)
+	color_type_new = png_get_color_type(png_ptr, info_ptr);
+	if(color_type_new == PNG_COLOR_TYPE_RGB_ALPHA)
 	{
 		int row_bytes = png_get_rowbytes(png_ptr, info_ptr);
 		Texture->psm = GS_TEX_32;
-		mem = memalign(128, Texture->width * Texture->height * 4);
+		mem = memalign(64, Texture->width * Texture->height * 4);
 
 		row_pointers = calloc(height, sizeof(png_bytep));
 
@@ -109,7 +122,7 @@ static int LoadPNGImage(struct UIDrawGlobal *gsGlobal, GS_IMAGE *Texture, const 
 		png_read_image(png_ptr, row_pointers);
 
 		struct pixel { unsigned char r,g,b,a; };
-		struct pixel *Pixels = (struct pixel *) UNCACHED_SEG(mem);
+		struct pixel *Pixels = (struct pixel *) UCAB_SEG(mem);
 
 		for (i=0;i<height;i++) {
 			for (j=0;j<width;j++) {
@@ -124,11 +137,11 @@ static int LoadPNGImage(struct UIDrawGlobal *gsGlobal, GS_IMAGE *Texture, const 
 
 		free(row_pointers);
 	}
-	else if(png_get_color_type(png_ptr, info_ptr) == PNG_COLOR_TYPE_RGB)
+	else if(color_type_new == PNG_COLOR_TYPE_RGB)
 	{
 		int row_bytes = png_get_rowbytes(png_ptr, info_ptr);
 		Texture->psm = GS_TEX_24;
-		mem = memalign(128, Texture->width * Texture->height * 4);
+		mem = memalign(64, Texture->width * Texture->height * 4);
 
 		row_pointers = calloc(height, sizeof(png_bytep));
 
@@ -137,7 +150,7 @@ static int LoadPNGImage(struct UIDrawGlobal *gsGlobal, GS_IMAGE *Texture, const 
 		png_read_image(png_ptr, row_pointers);
 
 		struct pixel3 { unsigned char r,g,b; };
-		struct pixel3 *Pixels = (struct pixel3 *) UNCACHED_SEG(mem);
+		struct pixel3 *Pixels = (struct pixel3 *) UCAB_SEG(mem);
 
 		for (i=0;i<height;i++) {
 			for (j=0;j<width;j++) {
@@ -151,18 +164,63 @@ static int LoadPNGImage(struct UIDrawGlobal *gsGlobal, GS_IMAGE *Texture, const 
 
 		free(row_pointers);
 	}
+	else if(color_type_new == PNG_COLOR_TYPE_PALETTE)
+	{
+		int row_bytes = png_get_rowbytes(png_ptr, info_ptr);
+		Texture->psm = GS_TEX_24;
+		mem = memalign(64, Texture->width * Texture->height);
+		clut_mem = memalign(64, Clut->width * Clut->height * 4);
+
+		png_get_PLTE(png_ptr, info_ptr, &palette, &num_palette);
+
+		struct pixel4 { unsigned char r,g,b,a; };
+		struct pixel4 *clut_mem4 = (struct pixel4*)UCAB_SEG(clut_mem);
+		for(i = 0; i < num_palette; i++)
+		{
+			clut_mem4->r = palette[i].red;
+			clut_mem4->g = palette[i].green;
+			clut_mem4->b = palette[i].blue;
+			clut_mem4->a = 0x80;
+		}
+
+		row_pointers = calloc(height, sizeof(png_bytep));
+
+		for(row = 0; row < height; row++) row_pointers[row] = malloc(row_bytes);
+
+		png_read_image(png_ptr, row_pointers);
+
+		u8 *Pixels = (u8 *) UCAB_SEG(mem);
+
+		for (i=0;i<height;i++) {
+			for (j=0;j<width;j++) {
+				Pixels[k++] = row_pointers[i][j];
+			}
+		}
+
+		for(row = 0; row < height; row++) free(row_pointers[row]);
+
+		free(row_pointers);
+
+		//Upload CLUT to VRAM
+		Clut->vram_addr = GsVramAllocTextureBuffer(Clut->width, Clut->height, Clut->psm);
+		GsLoadImage(clut_mem, Clut);
+		free(clut_mem);
+	}
 	else
 	{
-		//printf("This texture depth is not supported yet!\n");
+		printf("This texture depth is not supported yet!\n");
+		png_read_end(png_ptr, NULL);
+		png_destroy_read_struct(&png_ptr, &info_ptr, (png_infopp) NULL);
 		return -1;
 	}
 
 	png_read_end(png_ptr, NULL);
 	png_destroy_read_struct(&png_ptr, &info_ptr, (png_infopp) NULL);
 
-	Texture->vram_addr = GsVramAllocTextureBuffer(Texture->width, Texture->height + 64, Texture->psm);
+	Texture->vram_addr = GsVramAllocTextureBuffer(Texture->width, Texture->height, Texture->psm);
 	Texture->vram_width = ((Texture->width + 63) & ~63) / 64;
 
+	//Upload texture.
 	GsLoadImage(mem, Texture);
 	GsTextureFlush();
 	free(mem);
@@ -171,6 +229,7 @@ static int LoadPNGImage(struct UIDrawGlobal *gsGlobal, GS_IMAGE *Texture, const 
 }
 
 void DrawBackground(struct UIDrawGlobal *gsGlobal, GS_IMAGE *background){
+#ifdef CENTRE_BACKGROUND
 	short int x, y;
 
 	x=(gsGlobal->width-background->width)/2;
@@ -181,21 +240,29 @@ void DrawBackground(struct UIDrawGlobal *gsGlobal, GS_IMAGE *background){
 					0, 0,
 					x+background->width, y+background->height,
 					background->width, background->height,
-					8, (GS_RGBAQ){0xFF,0xFF,0xFF,0x80,0x00});
+					8, (GS_RGBAQ){0x80,0x80,0x80,0x80,0x00});
+#else
+	DrawSprite(gsGlobal, 0, 0, gsGlobal->width, gsGlobal->height, 9,  (GS_RGBAQ){0x00,0x00,0x00,0x80,0x00});
+	DrawSpriteTextured(gsGlobal, background,	0, 0,
+					0, 0,
+					gsGlobal->width, gsGlobal->height,
+					background->width, background->height,
+					8, (GS_RGBAQ){0x80,0x80,0x80,0x80,0x00});
+#endif
 }
 
-extern unsigned char pad_layout_start[];
-extern unsigned int pad_layout_size;
+extern unsigned char buttons[];
+extern unsigned int size_buttons;
 
-extern unsigned char background_start[];
-extern unsigned int background_size;
+extern unsigned char background[];
+extern unsigned int size_background;
 
 int LoadBackground(struct UIDrawGlobal *gsGlobal, GS_IMAGE* Texture){
-	return LoadPNGImage(gsGlobal, Texture, background_start, background_size);
+	return LoadPNGImage(gsGlobal, Texture, NULL, background, size_background);
 }
 
-int LoadPadGraphics(struct UIDrawGlobal *gsGlobal, GS_IMAGE* Texture){
-	return LoadPNGImage(gsGlobal, Texture, pad_layout_start, pad_layout_size);
+int LoadPadGraphics(struct UIDrawGlobal *gsGlobal, struct ClutImage* PadGraphics){
+	return LoadPNGImage(gsGlobal, &PadGraphics->texture, &PadGraphics->clut, buttons, size_buttons);
 }
 
 void DrawSetFilterMode(struct UIDrawGlobal *gsGlobal, int mode)
@@ -296,47 +363,58 @@ void UploadClut(struct UIDrawGlobal *gsGlobal, GS_IMAGE *clut, const void *buffe
 	gs_setR_TEXFLUSH((GS_R_TEXFLUSH	*)&p[1]);
 }
 
-struct ButtonLayoutParameters{
+struct IconLayout{
 	unsigned short int u, v;
 	unsigned short int length, width;
 };
 
-static const struct ButtonLayoutParameters ButtonLayoutParameters[]=
+static const struct IconLayout ButtonLayoutParameters[BUTTON_TYPE_COUNT]=
 {
-	/* Triggers */
-	{60, 0, 20, 16},
-	{40, 0, 20, 16},
-	{20, 0, 20, 16},
-	{0, 0, 20, 16},
-	/* D-pad buttons */
-	{0, 16, 16, 16},
-	{48, 16, 16, 16},
-	{16, 16, 16, 16},
-	{32, 16, 16, 16},
-	/* CIRCLE, CROSS, SQUARE and TRIANGLE */
-	{0, 32, 18, 17},
-	{18, 32, 18, 17},
-	{36, 32, 18, 17},
-	{54, 32, 18, 17},
-	/* START and SELECT */
-	{80, 18, 38, 18},
-	{80, 0, 38, 18}
+	{22, 0, 22, 22},	//Circle
+	{0, 0, 22, 22},		//Cross
+	{44, 0, 22, 22},	//Square
+	{66, 0, 22, 22},	//Triangle
+	{0, 22, 28, 20},	//L1
+	{56, 22, 28, 20},	//R1
+	{28, 22, 28, 20},	//L2
+	{84, 22, 28, 20},	//R2
+	{150, 42, 30, 30},	//L3
+	{150, 72, 30, 30},	//R3
+	{140, 22, 29, 19},	//START
+	{112, 22, 28, 19},	//SELECT
+	{120, 72, 30, 30},	//RSTICK
+	{0, 72, 30, 30},	//UP RSTICK
+	{30, 72, 30, 30},	//DOWN RSTICK
+	{60, 72, 30, 30},	//LEFT RSTICK
+	{90, 72, 30, 30},	//RIGHT RSTICK
+	{120, 42, 30, 30},	//LSTICK
+	{0, 42, 30, 30},	//UP LSTICK
+	{30, 42, 30, 30},	//DOWN LSTICK
+	{60, 42, 30, 30},	//LEFT LSTICK
+	{90, 42, 30, 30},	//RIGHT LSTICK
+	{104, 102, 26, 26},	//DPAD
+	{130, 102, 26, 26},	//LR-DPAD
+	{156, 102, 26, 26},	//UD-DPAD
+	{0, 102, 26, 26},	//UP DPAD
+	{26, 102, 26, 26},	//DOWN DPAD
+	{52, 102, 26, 26},	//LEFT DPAD
+	{78, 102, 26, 26},	//RIGHT DPAD
 };
 
-void DrawButtonLegendWithFeedback(struct UIDrawGlobal *gsGlobal, GS_IMAGE* PadGraphicsTexture, unsigned char ButtonType, short int x, short int y, short int z, short int *xRel)
+void DrawButtonLegendWithFeedback(struct UIDrawGlobal *gsGlobal, struct ClutImage* PadGraphicsTexture, unsigned char ButtonType, short int x, short int y, short int z, short int *xRel)
 {
-	DrawSpriteTextured(gsGlobal, PadGraphicsTexture,
+	DrawSpriteTexturedClut(gsGlobal, &PadGraphicsTexture->texture, &PadGraphicsTexture->clut,
 				x, y,
 				ButtonLayoutParameters[ButtonType].u, ButtonLayoutParameters[ButtonType].v,
 				x+ButtonLayoutParameters[ButtonType].length, y+ButtonLayoutParameters[ButtonType].width,
 				ButtonLayoutParameters[ButtonType].u+ButtonLayoutParameters[ButtonType].length, ButtonLayoutParameters[ButtonType].v+ButtonLayoutParameters[ButtonType].width,
-				z, (GS_RGBAQ){0xFF,0xFF,0xFF,0x80,0x00});
+				z, (GS_RGBAQ){0x80,0x80,0x80,0x80,0x00});
 
 	if(xRel != NULL)
 		*xRel = ButtonLayoutParameters[ButtonType].length;
 }
 
-void DrawButtonLegend(struct UIDrawGlobal *gsGlobal, GS_IMAGE* PadGraphicsTexture, unsigned char ButtonType, short int x, short int y, short int z)
+void DrawButtonLegend(struct UIDrawGlobal *gsGlobal, struct ClutImage* PadGraphicsTexture, unsigned char ButtonType, short int x, short int y, short int z)
 {
 	DrawButtonLegendWithFeedback(gsGlobal, PadGraphicsTexture, ButtonType, x, y, z, NULL);
 }

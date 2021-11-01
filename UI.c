@@ -21,12 +21,10 @@ extern int errno __attribute__((section("data")));
 
 struct UIDrawGlobal UIDrawGlobal;
 GS_IMAGE BackgroundTexture;
-GS_IMAGE PadLayoutTexture;
+struct ClutImage PadLayoutTexture;
 
-#ifdef UI_FONT_MEM
 static void *gFontBuffer = NULL;
 static int gFontBufferSize;
-#endif
 unsigned short int SelectButton, CancelButton;
 
 #define NUM_SUPPORTED_LANGUAGES	8
@@ -37,25 +35,33 @@ static int language=LANGUAGE_ENGLISH;
 
 static char *LangStringTable[SYS_UI_MSG_COUNT];
 static char *LangLblStringTable[SYS_UI_LBL_COUNT];
+static u8 LangStringWrapTable[(SYS_UI_MSG_COUNT + 7) / 8];
 
 static void UnloadLanguage(void);
+
+static void WaitForDevice(void)
+{
+	nopdelay();
+	nopdelay();
+	nopdelay();
+	nopdelay();
+	nopdelay();
+	nopdelay();
+	nopdelay();
+	nopdelay();
+}
 
 static int FormatLanguageString(const char *in, int len, char *out)
 {
 	wchar_t wchar1, wchar2;
-	int ActualLength, CharLen1, CharLen2, ScreenLineLen;
-	char *LastWhitespaceOut;
-	const char *LastSplit;
+	int ActualLength, CharLen1, CharLen2;
 
-	// Line lengths are counted from the last newline character (either discovered or inserted).
 	ActualLength = 0;
-	ScreenLineLen = 0;
 	CharLen1 = mbtowc(&wchar1, in, len);
-	LastWhitespaceOut = NULL;
-	LastSplit = in;
 	while(CharLen1 > 0 && wchar1 != '\0')
 	{
-		if(((CharLen2 = mbtowc(&wchar2, in + CharLen1, len - CharLen1)) > 0) && (wchar1 == '\\' && wchar2 != '\0'))
+		CharLen2 = mbtowc(&wchar2, in + CharLen1, len - CharLen1);
+		if((CharLen2 > 0) && (wchar1 == '\\' && wchar2 != '\0'))
 		{
 			switch(wchar2)
 			{	//When a translation file is used, escape characters appear like "\n" in the file.
@@ -63,8 +69,6 @@ static int FormatLanguageString(const char *in, int len, char *out)
 					*out = '\n';
 					out++;
 					ActualLength++;
-					ScreenLineLen = 0;
-					LastWhitespaceOut = NULL;
 					break;
 			}
 
@@ -72,40 +76,11 @@ static int FormatLanguageString(const char *in, int len, char *out)
 			len -= (CharLen1 + CharLen2);
 			CharLen2 = mbtowc(&wchar2, in, len);
 		} else {
-			switch(wchar1)
-			{	//Record where the latest whitespace is.
-				case ' ':
-					LastWhitespaceOut = out;
-					break;
-			}
-
 			memcpy(out, in, CharLen1);
 			out += CharLen1;
 			ActualLength += CharLen1;
 			in += CharLen1;
 			len -= CharLen1;
-
-			switch(wchar1)
-			{	//If the lines are built-in, escape characters are used.
-				case '\n':
-					ScreenLineLen = 0;
-					LastWhitespaceOut = NULL;
-					break;
-				default:
-					ScreenLineLen++;
-			}
-
-			// To wrap long lines, replace the last whitespace with a newline character
-			if(ScreenLineLen >= UI_LINE_MAX)
-			{
-				if(LastWhitespaceOut != NULL)
-				{
-					ScreenLineLen = (int)(out - LastWhitespaceOut) - 1;
-					*LastWhitespaceOut = '\n';
-					LastSplit = LastWhitespaceOut + 1;
-					LastWhitespaceOut = NULL;
-				}
-			}
 		}
 
 		CharLen1 = CharLen2;
@@ -114,6 +89,62 @@ static int FormatLanguageString(const char *in, int len, char *out)
 	*out = '\0';
 
 	return(ActualLength + 1);
+}
+
+static void BreakLongLanguageString(char *str)
+{
+	wchar_t wchar;
+	int CharLen, ScreenLineLenPx, LineMaxPx, PxSinceLastSpace, len, width;
+	char *LastWhitespaceOut;
+
+	LineMaxPx = UIDrawGlobal.width - 2*UI_OFFSET_X;
+
+	// Line lengths are counted from the last newline character (either discovered or inserted).
+	ScreenLineLenPx = 0;
+	PxSinceLastSpace = 0;
+	len = strlen(str) + 1;
+	CharLen = mbtowc(&wchar, str, len);
+	LastWhitespaceOut = NULL;
+	while(CharLen > 0 && wchar != '\0')
+	{
+		switch(wchar)
+		{
+			case '\n':
+				ScreenLineLenPx = 0;
+				LastWhitespaceOut = NULL;
+				PxSinceLastSpace = 0;
+				break;
+			case ' ':	//Record where the latest whitespace is.
+				LastWhitespaceOut = str;
+				PxSinceLastSpace = 0;
+				break;
+		}
+
+		if (wchar != '\n')
+		{
+			width = FontGetGlyphWidth(&UIDrawGlobal, wchar);
+
+			// To wrap long lines, replace the last whitespace with a newline character
+			if(ScreenLineLenPx + width >= LineMaxPx)
+			{
+				if(LastWhitespaceOut != NULL)
+				{
+					ScreenLineLenPx = PxSinceLastSpace;
+					*LastWhitespaceOut = '\n';
+					LastWhitespaceOut = NULL;
+				}
+			}
+
+			ScreenLineLenPx += width;
+			if(wchar != ' ')
+				PxSinceLastSpace += width;
+		}
+
+		str += CharLen;
+		len -= CharLen;
+
+		CharLen = mbtowc(&wchar, str, len);
+	}
 }
 
 static int ParseLanguageFile(char **array, FILE *file, unsigned int ExpectedNumLines)
@@ -140,7 +171,8 @@ static int ParseLanguageFile(char **array, FILE *file, unsigned int ExpectedNumL
 
 		if((array[LinesLoaded] = malloc(len + 1)) != NULL)
 		{
-			array[LinesLoaded] = realloc(array[LinesLoaded], FormatLanguageString(line, len + 1, array[LinesLoaded]));
+			len = FormatLanguageString(line, len + 1, array[LinesLoaded]);
+			array[LinesLoaded] = realloc(array[LinesLoaded], len);
 		} else {
 			result=-ENOMEM;
 			break;
@@ -151,7 +183,7 @@ static int ParseLanguageFile(char **array, FILE *file, unsigned int ExpectedNumL
 	{
 		if(LinesLoaded != ExpectedNumLines)
 		{
-			DEBUG_PRINTF("ParseLanguageFile: Mismatched number of lines (%u/%d)\n", LinesLoaded, ExpectedNumLines);
+			printf("ParseLanguageFile: Mismatched number of lines (%u/%d)\n", LinesLoaded, ExpectedNumLines);
 			result = -1;
 		}
 	}
@@ -179,7 +211,8 @@ static int ParseFontListFile(char **array, FILE *file, unsigned int ExpectedNumL
 		{
 			if((array[LinesLoaded] = malloc(len + 1)) != NULL)
 			{
-				strcpy(array[LinesLoaded], line);
+				len = FormatLanguageString(line, len + 1, array[LinesLoaded]);
+				array[LinesLoaded] = realloc(array[LinesLoaded], len);
 			} else {
 				result = -ENOMEM;
 				break;
@@ -191,7 +224,7 @@ static int ParseFontListFile(char **array, FILE *file, unsigned int ExpectedNumL
 	{
 		if(LinesLoaded!=ExpectedNumLines)
 		{
-			DEBUG_PRINTF("ParseFontListFile: Mismatched number of lines (%u/%d)\n", LinesLoaded, ExpectedNumLines);
+			printf("ParseFontListFile: Mismatched number of lines (%u/%d)\n", LinesLoaded, ExpectedNumLines);
 			result = -1;
 		}
 	}
@@ -220,7 +253,15 @@ static char *GetFontFilePath(unsigned int language)
 	result=NULL;
 	memset(FontFileArray, 0, sizeof(FontFileArray));
 
-	if((file = fopen("lang/fonts.txt", "r")) != NULL)
+	while((file = fopen("lang/fonts.txt", "r")) == NULL)
+	{
+		if(errno != ENODEV)
+			break;
+
+		WaitForDevice();
+	}
+
+	if(file != NULL)
 	{
 		if(ParseFontListFile(FontFileArray, file, NUM_SUPPORTED_LANGUAGES)==0)
 		{
@@ -300,7 +341,8 @@ static int LoadDefaultLanguageStrings(void)
 
 		if((LangStringTable[LinesLoaded] = malloc(len + 1)) != NULL)
 		{
-			LangStringTable[LinesLoaded] = realloc(LangStringTable[LinesLoaded], FormatLanguageString(DefaultLanguageStringTable[LinesLoaded], len + 1, LangStringTable[LinesLoaded]));
+			len = FormatLanguageString(DefaultLanguageStringTable[LinesLoaded], len + 1, LangStringTable[LinesLoaded]);
+			LangStringTable[LinesLoaded] = realloc(LangStringTable[LinesLoaded], len);
 		} else {
 			result=-ENOMEM;
 			break;
@@ -316,7 +358,8 @@ static int LoadDefaultLanguageStrings(void)
 
 			if((LangLblStringTable[LinesLoaded] = malloc(len + 1)) != NULL)
 			{
-				LangLblStringTable[LinesLoaded] = realloc(LangLblStringTable[LinesLoaded], FormatLanguageString(DefaultLanguageLabelStringTable[LinesLoaded], len + 1, LangLblStringTable[LinesLoaded]));
+				len = FormatLanguageString(DefaultLanguageLabelStringTable[LinesLoaded], len + 1, LangLblStringTable[LinesLoaded]);
+				LangLblStringTable[LinesLoaded] = realloc(LangLblStringTable[LinesLoaded], len);
 			} else {
 				result=-ENOMEM;
 				break;
@@ -353,25 +396,20 @@ static void UnloadLanguage(void)
 	}
 }
 
-const char *GetUIString(unsigned int StringID)
+const char *GetUIString(unsigned int id)
 {
-	return(LangStringTable[StringID]);
+	if(!(LangStringWrapTable[id / 8] & (1 << (id % 8))))
+	{
+		BreakLongLanguageString(LangStringTable[id]);
+		LangStringWrapTable[id / 8] |= (1 << (id % 8));
+	}
+
+	return(LangStringTable[id]);
 }
 
-const char *GetUILabel(unsigned int LabelID)
+const char *GetUILabel(unsigned int id)
 {
-	return(LangLblStringTable[LabelID]);
-}
-static void WaitForDevice(void)
-{
-	nopdelay();
-	nopdelay();
-	nopdelay();
-	nopdelay();
-	nopdelay();
-	nopdelay();
-	nopdelay();
-	nopdelay();
+	return(LangLblStringTable[id]);
 }
 
 static void InitGraphics(void)
@@ -436,8 +474,6 @@ static void InitGraphics(void)
 	GsEnableAlphaBlending2(GS_ENABLE);
 }
 
-#ifdef UI_FONT_MEM
-#define UI_LOAD_FONT_FUNC(DrawGlobal, path) LoadFontIntoBuffer(DrawGlobal, path)
 
 static int LoadFontIntoBuffer(struct UIDrawGlobal *gsGlobal, const char *path)
 {
@@ -451,11 +487,11 @@ static int LoadFontIntoBuffer(struct UIDrawGlobal *gsGlobal, const char *path)
 		size = ftell(file);
 		rewind(file);
 
-		if((buffer = malloc(size)) != NULL)
+		if((buffer = memalign(64, size)) != NULL)
 		{
 			if(fread(buffer, 1, size, file) == size)
 			{
-				if((result = FontInitWithBuffer(gsGlobal, buffer, size)) != 0)
+				if((result = FontInitWithBuffer(&UIDrawGlobal, buffer, size)) != 0)
 					free(buffer);
 				else {
 					gFontBuffer = buffer;
@@ -473,17 +509,90 @@ static int LoadFontIntoBuffer(struct UIDrawGlobal *gsGlobal, const char *path)
 
 	return result;
 }
-#else
-#define UI_LOAD_FONT_FUNC(DrawGlobal, path) FontInit(DrawGlobal, path)
-#endif
 
-int InitializeUI(void)
+static int InitFont(void)
 {
+	int result;
 	char *pFontFilePath;
+
+	if((pFontFilePath=GetFontFilePath(language))!=NULL)
+	{
+		DEBUG_PRINTF("GetFontFilePath(%d): %s\n", language, pFontFilePath);
+	}
+	else{
+		printf("Can't get font file path from GetFontFilePath(%d).\n", language);
+		return -1;
+	}
+
+	if((result=FontInit(&UIDrawGlobal, pFontFilePath))!=0)
+	{
+		DEBUG_PRINTF("InitFont(%s) result: %d. Using default font.\n", pFontFilePath, result);
+		free(pFontFilePath);
+		pFontFilePath=GetDefaultFontFilePath();
+
+		result=FontInit(&UIDrawGlobal, pFontFilePath);
+	}
+	if(result != 0)
+		printf("InitFont(%s) error: %d\n", pFontFilePath, result);
+	free(pFontFilePath);
+
+	return result;
+}
+
+static int InitFontWithBuffer(void)
+{
+	int result;
+	char *pFontFilePath;
+
+	if(gFontBuffer == NULL)
+	{
+		if((pFontFilePath=GetFontFilePath(language))!=NULL)
+		{
+			DEBUG_PRINTF("GetFontFilePath(%d): %s\n", language, pFontFilePath);
+		}
+		else{
+			printf("Can't get font file path from GetFontFilePath(%d).\n", language);
+			return -1;
+		}
+
+		if((result=LoadFontIntoBuffer(&UIDrawGlobal, pFontFilePath))!=0)
+		{
+			DEBUG_PRINTF("InitFont(%s) result: %d. Using default font.\n", pFontFilePath, result);
+			free(pFontFilePath);
+			pFontFilePath=GetDefaultFontFilePath();
+
+			result=LoadFontIntoBuffer(&UIDrawGlobal, pFontFilePath);
+		}
+		if(result != 0)
+			printf("InitFont(%s) error: %d\n", pFontFilePath, result);
+		free(pFontFilePath);
+	} else
+		result = 0;
+
+	return result;
+}
+
+int ReinitializeUI(void)
+{
+	if(gFontBuffer == NULL)
+	{
+		FontDeinit();
+		return InitFont();
+	}
+	else
+	{
+		//No need to reinitialize font when it is loaded into memory.
+		return 0;
+	}
+}
+
+int InitializeUI(int BufferFont)
+{
 	int result;
 
 	result=0;
 	if((language=configGetLanguage())>=NUM_SUPPORTED_LANGUAGES) language=LANGUAGE_ENGLISH;
+	memset(LangStringWrapTable, 0, sizeof(LangStringWrapTable));
 
 	DEBUG_PRINTF("InitializeUI: language is: %u\n", language);
 
@@ -498,13 +607,12 @@ int InitializeUI(void)
 
 	InitGraphics();
 
-	DEBUG_PRINTF("InitGraphics()\n");
-
-	while((result=LoadLanguageStrings(language))==-ENODEV)
+	while((result = LoadLanguageStrings(language)) == -ENODEV)
 	{
 		DEBUG_PRINTF("LoadLanguageStrings(%u): %d\n", language, result);
 		WaitForDevice();
 	}
+
 	DEBUG_PRINTF("LoadLanguageStrings(%u) result: %d\n", language, result);
 	if(result != 0)
 	{
@@ -515,30 +623,9 @@ int InitializeUI(void)
 		}
 	}
 
-	if((pFontFilePath=GetFontFilePath(language))!=NULL)
-	{
-		DEBUG_PRINTF("GetFontFilePath(%d): %s\n", language, pFontFilePath);
-	}
-	else{
-		DEBUG_PRINTF("Can't get font file path from GetFontFilePath(%d).\n", language);
-		return -1;
-	}
+	result = BufferFont ? InitFontWithBuffer() : InitFont();
 
-	if((result=UI_LOAD_FONT_FUNC(&UIDrawGlobal, pFontFilePath))!=0)
-	{
-		DEBUG_PRINTF("FontInit(%s) result: %d. Using default font.\n", pFontFilePath, result);
-		free(pFontFilePath);
-		pFontFilePath=GetDefaultFontFilePath();
-
-		if((result=UI_LOAD_FONT_FUNC(&UIDrawGlobal, pFontFilePath))!=0)
-		{
-			DEBUG_PRINTF("FontInit(%s) result: %d\n", pFontFilePath, result);
-		}
-	}
-	DEBUG_PRINTF("FontInit(%s) result: %d\n", pFontFilePath, result);
-	free(pFontFilePath);
-
-	if(result==0)
+	if(result == 0)
 	{
 		LoadBackground(&UIDrawGlobal, &BackgroundTexture);
 		LoadPadGraphics(&UIDrawGlobal, &PadLayoutTexture);
@@ -554,14 +641,12 @@ void DeinitializeUI(void)
 	UnloadLanguage();
 	FontDeinit();
 
-#ifdef UI_FONT_MEM
 	if(gFontBuffer != NULL)
 	{
 		free(gFontBuffer);
 		gFontBuffer = NULL;
 		gFontBufferSize = 0;
 	}
-#endif
 }
 
 enum MBOX_SCREEN_ID{
@@ -741,13 +826,25 @@ void UISetValue(struct UIMenu *menu, unsigned char id, int value)
 	}
 }
 
+int UIGetValue(struct UIMenu *menu, unsigned char id)
+{
+	struct UIMenuItem *item;
+
+	if((item = UIGetItem(menu, id)) != NULL)
+	{
+		return item->value.value;
+	}
+
+	return -1;
+}
+
 void UISetLabel(struct UIMenu *menu, unsigned char id, int label)
 {
 	struct UIMenuItem *item;
 
 	if((item = UIGetItem(menu, id)) != NULL)
 	{
-		item->value.value = label;
+		item->label.id = label;
 	}
 }
 
@@ -782,6 +879,40 @@ void UISetFormat(struct UIMenu *menu, unsigned char id, unsigned char format, un
 	}
 }
 
+void UISetEnum(struct UIMenu *menu, unsigned char id, const int *labels, int count)
+{
+	struct UIMenuItem *item;
+
+	if((item = UIGetItem(menu, id)) != NULL)
+	{
+		item->enumeration.labels = labels;
+		item->enumeration.count = count;
+		item->enumeration.selectedIndex = 0;
+	}
+}
+
+void UISetEnumSelectedIndex(struct UIMenu *menu, unsigned char id, int selectedIndex)
+{
+	struct UIMenuItem *item;
+
+	if((item = UIGetItem(menu, id)) != NULL)
+	{
+		item->enumeration.selectedIndex = selectedIndex;
+	}
+}
+
+int UIGetEnumSelectedIndex(struct UIMenu *menu, unsigned char id)
+{
+	struct UIMenuItem *item;
+
+	if((item = UIGetItem(menu, id)) != NULL)
+	{
+		return item->enumeration.selectedIndex;
+	}
+
+	return -1;
+}
+
 void UIDrawMenu(struct UIMenu *menu, unsigned short int frame, short int StartX, short int StartY, short int selection)
 {
 	const char *pLabel;
@@ -789,7 +920,6 @@ void UIDrawMenu(struct UIMenu *menu, unsigned short int frame, short int StartX,
 	struct UIMenuItem *item, *SelectedItem;
 	short int x, y, width, height, xRel, yRel, button, i;
 	GS_RGBAQ colour;
-	int LabelLen;
 
 	DrawBackground(&UIDrawGlobal, &BackgroundTexture);
 
@@ -836,10 +966,8 @@ void UIDrawMenu(struct UIMenu *menu, unsigned short int frame, short int StartX,
 				}
 				break;
 			case MITEM_BUTTON:
-				if((pLabel = GetUILabel(item->value.value)) != NULL)
+				if((pLabel = GetUILabel(item->label.id)) != NULL)
 				{
-					LabelLen = mbslen(pLabel);
-
 					width = item->width * UI_FONT_WIDTH;
 					height = UI_FONT_HEIGHT + UI_FONT_HEIGHT / 2;
 					if(item == SelectedItem)
@@ -855,7 +983,8 @@ void UIDrawMenu(struct UIMenu *menu, unsigned short int frame, short int StartX,
 
 					colour = (item->flags & MITEM_FLAG_DISABLED) ? GS_GREY_FONT : (item == SelectedItem ? GS_YELLOW_FONT : GS_WHITE_FONT);
 
-					FontPrintfWithFeedback(&UIDrawGlobal, x + (width - LabelLen * UI_FONT_WIDTH) / 2, y, 1, 1.0f, colour, pLabel, &xRel, &yRel);
+					FontPrintfWithFeedback(&UIDrawGlobal, x + (width - item->label.TextWidth) / 2, y, 1, 1.0f, colour, pLabel, &xRel, &yRel);
+					item->label.TextWidth = xRel;
 					x += xRel;
 					y += yRel + UI_FONT_HEIGHT;
 				}
@@ -863,28 +992,26 @@ void UIDrawMenu(struct UIMenu *menu, unsigned short int frame, short int StartX,
 			case MITEM_LABEL:
 				if((pLabel = GetUILabel(item->value.value)) != NULL)
 				{
-					if(item->flags & MITEM_FLAG_POS_MID)
-						x = (UIDrawGlobal.width - mbslen(pLabel) * UI_FONT_WIDTH) / 2;
 					FontPrintfWithFeedback(&UIDrawGlobal, x, y, 1, 1.0f, GS_WHITE_FONT, pLabel, &xRel, &yRel);
 					x += xRel;
 					y += yRel;
 				}
 				break;
 			case MITEM_COLON:
-				FontPrintf(&UIDrawGlobal, x, y, 1, 1.0f, GS_WHITE_FONT, ":");
-				x += UI_FONT_WIDTH;
+				FontPrintfWithFeedback(&UIDrawGlobal, x, y, 1, 1.0f, GS_WHITE_FONT, ":", &xRel, NULL);
+				x += xRel;
 				break;
 			case MITEM_DASH:
-				FontPrintf(&UIDrawGlobal, x, y, 1, 1.0f, GS_WHITE_FONT, "-");
-				x += UI_FONT_WIDTH;
+				FontPrintfWithFeedback(&UIDrawGlobal, x, y, 1, 1.0f, GS_WHITE_FONT, "-", &xRel, NULL);
+				x += xRel;
 				break;
 			case MITEM_DOT:
-				FontPrintf(&UIDrawGlobal, x, y, 1, 1.0f, GS_WHITE_FONT, ".");
-				x += UI_FONT_WIDTH;
+				FontPrintfWithFeedback(&UIDrawGlobal, x, y, 1, 1.0f, GS_WHITE_FONT, ".", &xRel, NULL);
+				x += xRel;
 				break;
 			case MITEM_SLASH:
-				FontPrintf(&UIDrawGlobal, x, y, 1, 1.0f, GS_WHITE_FONT, "/");
-				x += UI_FONT_WIDTH;
+				FontPrintfWithFeedback(&UIDrawGlobal, x, y, 1, 1.0f, GS_WHITE_FONT, "/", &xRel, NULL);
+				x += xRel;
 				break;
 			case MITEM_VALUE:
 				pFormatString = FormatString;
@@ -943,13 +1070,20 @@ void UIDrawMenu(struct UIMenu *menu, unsigned short int frame, short int StartX,
 				DrawProgressBar(&UIDrawGlobal, item->value.value / 100.0f, x + 20, y, 4, UIDrawGlobal.width - (x + 20) - 20, GS_BLUE);
 				y += UI_FONT_HEIGHT;
 				break;
-#ifdef UI_EN_MITEM_TOGGLE
 			case MITEM_TOGGLE:
 				colour = (item->flags & MITEM_FLAG_DISABLED) ? GS_GREY_FONT : ((item->flags & MITEM_FLAG_READONLY) ? GS_WHITE_FONT : (item == SelectedItem ? GS_YELLOW_FONT : GS_BLUE_FONT));
-				FontPrintfWithFeedback(&UIDrawGlobal, x, y, 1, 1.0f, colour, UIGetLabel(item->value.value == 0 ? : SYS_UI_LBL_DISABLED : SYS_UI_LBL_ENABLED), &xRel, &yRel);
+				FontPrintfWithFeedback(&UIDrawGlobal, x, y, 1, 1.0f, colour, GetUILabel(item->value.value == 0 ? SYS_UI_LBL_DISABLED : SYS_UI_LBL_ENABLED), &xRel, &yRel);
 				x += xRel;
 				y += yRel;
-#endif
+				break;
+			case MITEM_ENUM:
+				if((pLabel = GetUILabel(item->enumeration.labels[item->enumeration.selectedIndex])) != NULL)
+				{
+					colour = (item->flags & MITEM_FLAG_DISABLED) ? GS_GREY_FONT : ((item->flags & MITEM_FLAG_READONLY) ? GS_WHITE_FONT : (item == SelectedItem ? GS_YELLOW_FONT : GS_BLUE_FONT));
+					FontPrintfWithFeedback(&UIDrawGlobal, x, y, 1, 1.0f, colour, pLabel, &xRel, &yRel);
+					x += xRel;
+					y += yRel;
+				}
 		}
 	}
 
@@ -1170,7 +1304,7 @@ static short int UIGetPrevSelectableItem(struct UIMenu *menu, short int index)
 	return result;
 }
 
-int UIExecMenu(struct UIMenu *FirstMenu, short int SelectedItem, struct UIMenu **CurrentMenu, int (*callback)(struct UIMenu *menu, unsigned short int frame, int selection, int padstatus))
+int UIExecMenu(struct UIMenu *FirstMenu, short int SelectedItem, struct UIMenu **CurrentMenu, int (*callback)(struct UIMenu *menu, unsigned short int frame, int selection, u32 padstatus))
 {
 	struct UIMenu *menu;
 	int result;
@@ -1178,8 +1312,13 @@ int UIExecMenu(struct UIMenu *FirstMenu, short int SelectedItem, struct UIMenu *
 	struct UIMenuItem *item;
 	short int selection, NextSel;
 	unsigned short int frame;
+	u32 PadRepeatStatus, PadRepeatStatusOld, PadStatusTemp;
+	unsigned short int PadRepeatDelayTicks, PadRepeatRateTicks;
 
 	PadStatus = 0;
+	PadRepeatStatusOld = 0;
+	PadRepeatDelayTicks = UI_PAD_REPEAT_START_DELAY;
+	PadRepeatRateTicks = UI_PAD_REPEAT_DELAY;
 	frame = 0;
 	menu = FirstMenu;
 
@@ -1192,7 +1331,7 @@ int UIExecMenu(struct UIMenu *FirstMenu, short int SelectedItem, struct UIMenu *
 
 	if(callback != NULL)
 	{
-		if((result = callback(menu, frame, selection, -1)) != 0)
+		if((result = callback(menu, frame, selection, 0)) != 0)
 			goto exit_menu;
 	}
 
@@ -1200,7 +1339,46 @@ int UIExecMenu(struct UIMenu *FirstMenu, short int SelectedItem, struct UIMenu *
 	{
 		PadStatus=ReadCombinedPadStatus();
 
-		if(PadStatus&PAD_UP)
+		//For the pad repeat delay effect.
+		PadRepeatStatus = ReadCombinedPadStatus_raw();
+		if(PadRepeatStatus == 0 || ((PadRepeatStatusOld != 0) && (PadRepeatStatus != PadRepeatStatusOld)))
+		{
+			PadRepeatDelayTicks = UI_PAD_REPEAT_START_DELAY;
+			PadRepeatRateTicks = UI_PAD_REPEAT_DELAY;
+
+			PadStatusTemp = PadRepeatStatus & ~PadRepeatStatusOld;
+			PadRepeatStatusOld = PadRepeatStatus;
+			PadRepeatStatus = PadStatusTemp;
+		}
+		else
+		{
+			if(PadRepeatDelayTicks == 0)
+			{
+				//Allow the pad presses to repeat, but only after the pad repeat delay expires.
+				if(PadRepeatRateTicks == 0)
+				{
+					PadRepeatRateTicks = UI_PAD_REPEAT_DELAY;
+				}
+				else
+				{
+					PadStatusTemp = PadRepeatStatus & ~PadRepeatStatusOld;
+					PadRepeatStatusOld = PadRepeatStatus;
+					PadRepeatStatus = PadStatusTemp;
+				}
+
+				PadRepeatRateTicks--;
+			}
+			else
+			{
+				PadStatusTemp = PadRepeatStatus & ~PadRepeatStatusOld;
+				PadRepeatStatusOld = PadRepeatStatus;
+				PadRepeatStatus = PadStatusTemp;
+
+				PadRepeatDelayTicks--;
+			}
+		}
+
+		if(PadRepeatStatus&PAD_UP)
 		{
 			//Try to find the previous selectable option.
 			if((NextSel = UIGetPrevSelectableItem(menu, selection)) >= 0)
@@ -1208,44 +1386,71 @@ int UIExecMenu(struct UIMenu *FirstMenu, short int SelectedItem, struct UIMenu *
 				selection = NextSel;
 				item = &menu->items[selection];
 			}
-		} else if(PadStatus&PAD_DOWN) {
+		} else if(PadRepeatStatus&PAD_DOWN) {
 			//Try to find the next selectable option.
 			if((NextSel = UIGetNextSelectableItem(menu, selection)) >= 0)
 			{
 				selection = NextSel;
 				item = &menu->items[selection];
 			}
-		} else if(PadStatus&PAD_LEFT) {
-			if(item != NULL && !(item->flags & MITEM_FLAG_READONLY))
+		} else if(PadRepeatStatus&PAD_LEFT) {
+			if(item != NULL && !(item->flags & MITEM_FLAG_READONLY) && !(item->flags & MITEM_FLAG_DISABLED))
 			{
 				switch(item->type)
 				{
 					case MITEM_VALUE:
-						if(item->value.value - 1 > item->value.min)
+						if(item->value.value - 1 >= item->value.min)
 							item->value.value--;
+						else
+							item->value.value = item->value.max;
+						break;
+					case MITEM_TOGGLE:
+						item->value.value = !item->value.value;
+						break;
+					case MITEM_ENUM:
+						if(item->enumeration.selectedIndex > 0)
+							item->enumeration.selectedIndex--;
+						else
+							item->enumeration.selectedIndex = item->enumeration.count - 1;
+						break;
 				}
 			}
-		} else if(PadStatus&PAD_RIGHT) {
-			if(item != NULL && !(item->flags & MITEM_FLAG_READONLY))
+		} else if(PadRepeatStatus&PAD_RIGHT) {
+			if(item != NULL && !(item->flags & MITEM_FLAG_READONLY) && !(item->flags & MITEM_FLAG_DISABLED))
 			{
 				switch(item->type)
 				{
 					case MITEM_VALUE:
-						if(item->value.value + 1 < item->value.max)
+						if(item->value.value + 1 <= item->value.max)
 							item->value.value++;
+						else
+							item->value.value = item->value.min;
+						break;
+					case MITEM_TOGGLE:
+						item->value.value = !item->value.value;
+						break;
+					case MITEM_ENUM:
+						if(item->enumeration.selectedIndex + 1 < item->enumeration.count)
+							item->enumeration.selectedIndex++;
+						else
+							item->enumeration.selectedIndex = 0;
+						break;
 				}
 			}
 		}
 
 		if(PadStatus&SelectButton)
 		{
-			if(item != NULL && !(item->flags & MITEM_FLAG_DISABLED))
+			if(item != NULL && !(item->flags & MITEM_FLAG_READONLY) && !(item->flags & MITEM_FLAG_DISABLED))
 			{
 				switch(item->type)
 				{
 					case MITEM_BUTTON:
 						result = item->id;
 						goto exit_menu;
+					case MITEM_TOGGLE:
+						item->value.value = !item->value.value;
+						break;
 				}
 			}
 		} else if(PadStatus&CancelButton) {
@@ -1264,12 +1469,6 @@ int UIExecMenu(struct UIMenu *FirstMenu, short int SelectedItem, struct UIMenu *
 				item = ((selection = UIGetNextSelectableItem(menu, -1)) >= 0) ? &menu->items[selection] : NULL;
 
 				UITransition(menu, UIMT_LEFT_IN, selection);
-
-				if(callback != NULL)
-				{
-					if((result = callback(menu, frame, selection, -1)) != 0)
-						break;
-				}
 			}
 		} else if(PadStatus&PAD_L1) {
 			if(menu->prev != NULL)
@@ -1281,12 +1480,6 @@ int UIExecMenu(struct UIMenu *FirstMenu, short int SelectedItem, struct UIMenu *
 				item = ((selection = UIGetNextSelectableItem(menu, -1)) >= 0) ? &menu->items[selection] : NULL;
 
 				UITransition(menu, UIMT_RIGHT_IN, selection);
-
-				if(callback != NULL)
-				{
-					if((result = callback(menu, frame, selection, -1)) != 0)
-						break;
-				}
 			}
 		}
 

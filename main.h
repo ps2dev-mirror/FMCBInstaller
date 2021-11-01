@@ -6,7 +6,7 @@
 	#define DEBUG_PRINTF(args...)
 #endif
 
-#define FMCB_INSTALLER_VERSION	"0.973"
+#define FMCB_INSTALLER_VERSION	"0.987"
 
 /* The number of files and folders to crosslink (For multi-regional and cross-model installations). */
 #define NUM_CROSSLINKED_FILES	8
